@@ -1,0 +1,138 @@
+@import "tailwindcss";
+
+:root {
+  --radius: 0.8rem;
+
+  --background: #f4f4fa;
+  --foreground: #111116;
+
+  --card: #ffffff;
+  --card-foreground: #111116;
+
+  --popover: #ffffff;
+  --popover-foreground: #111116;
+
+  --primary: #5c6ff5;
+  --primary-foreground: #ffffff;
+
+  --secondary: #e8e8f5;
+  --secondary-foreground: #111116;
+
+  --muted: #ededf5;
+  --muted-foreground: #6666aa;
+
+  --accent: #e4e4f0;
+  --accent-foreground: #111116;
+
+  --destructive: #e5554f;
+  --destructive-foreground: #ffffff;
+
+  --border: #d4d4e8;
+  --input: #d4d4e8;
+  --ring: #5c6ff5;
+}
+
+.dark {
+  --background: #111116;
+  --foreground: #e8e8f2;
+
+  --card: #16161e;
+  --card-foreground: #e8e8f2;
+
+  --popover: #16161e;
+  --popover-foreground: #e8e8f2;
+
+  --primary: #5c6ff5;
+  --primary-foreground: #ffffff;
+
+  --secondary: #1c1c28;
+  --secondary-foreground: #e8e8f2;
+
+  --muted: #181822;
+  --muted-foreground: #8888aa;
+
+  --accent: #20202e;
+  --accent-foreground: #e8e8f2;
+
+  --destructive: #e5554f;
+  --destructive-foreground: #ffffff;
+
+  --border: #28283c;
+  --input: #28283c;
+  --ring: #5c6ff5;
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: "Inter", "SF Pro Text", "Avenir Next", "Segoe UI", sans-serif;
+  background: var(--background);
+  color: var(--foreground);
+  overflow: hidden;
+}
+
+/* Minimalist scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+::view-transition-old(root), ::view-transition-new(root) {
+    animation: none;
+    mix-blend-mode: normal;
+}
