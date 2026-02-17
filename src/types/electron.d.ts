@@ -100,7 +100,7 @@ declare global {
           payload: ChatRequestPayload | ChatMessage[]
         ) => Promise<ChatStreamStartResult>;
         abortStream: (requestId: string) => Promise<{ ok: boolean }>;
-        provideToolResponse: (requestId: string, answer: string) => Promise<{ ok: boolean }>;
+        respondToApproval: (approvalId: string, response: unknown) => Promise<{ ok: boolean }>;
         onStreamEvent: (callback: (event: ChatStreamEvent) => void) => () => void;
       };
       debug: {

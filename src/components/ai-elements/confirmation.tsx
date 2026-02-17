@@ -3,6 +3,12 @@
 import type { ToolUIPart } from "ai";
 import type { ComponentProps, ReactNode } from "react";
 
+type ExtendedToolState =
+  | ToolUIPart["state"]
+  | "approval-requested"
+  | "approval-responded"
+  | "output-denied";
+
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -38,7 +44,7 @@ type ToolUIPartApproval =
 
 interface ConfirmationContextValue {
   approval: ToolUIPartApproval;
-  state: ToolUIPart["state"];
+  state: ExtendedToolState;
 }
 
 const ConfirmationContext = createContext<ConfirmationContextValue | null>(null);
@@ -55,7 +61,7 @@ const useConfirmation = () => {
 
 export type ConfirmationProps = ComponentProps<typeof Alert> & {
   approval?: ToolUIPartApproval;
-  state: ToolUIPart["state"];
+  state: ExtendedToolState;
 };
 
 export const Confirmation = ({ className, approval, state, ...props }: ConfirmationProps) => {

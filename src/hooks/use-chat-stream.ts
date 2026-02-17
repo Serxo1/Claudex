@@ -8,6 +8,22 @@ import type {
   Thread,
   ToolTimelineItem
 } from "@/lib/chat-types";
+
+export type PendingApproval = {
+  approvalId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+};
+
+export type PendingQuestion = {
+  approvalId: string;
+  questions: Array<{
+    question: string;
+    header: string;
+    options: Array<{ label: string; description: string }>;
+    multiSelect: boolean;
+  }>;
+};
 import { FALLBACK_SLASH_COMMANDS } from "@/lib/chat-types";
 import {
   appendReasoningLine,
@@ -50,6 +66,11 @@ export interface UseChatStreamReturn {
   } | null;
   slashCommands: string[];
   isSending: boolean;
+  pendingApproval: PendingApproval | null;
+  pendingQuestion: PendingQuestion | null;
+  onApprove: (approvalId: string, input: Record<string, unknown>) => Promise<void>;
+  onDeny: (approvalId: string) => Promise<void>;
+  onAnswerQuestion: (approvalId: string, answers: Record<string, string>) => Promise<void>;
   onAbortStream: () => Promise<void>;
   onSubmit: (
     message: {
@@ -97,6 +118,8 @@ export function useChatStream(
   const [permissionMode, setPermissionMode] = useState<PermissionMode>("unknown");
   const [contextUsage, setContextUsage] = useState<UseChatStreamReturn["contextUsage"]>(null);
   const [limitsWarning, setLimitsWarning] = useState<UseChatStreamReturn["limitsWarning"]>(null);
+  const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
+  const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
 
   const activeStreamRef = useRef<{
     requestId: string;
@@ -145,6 +168,23 @@ export function useChatStream(
           message: event.message,
           fiveHourPercent: event.fiveHourPercent,
           weeklyPercent: event.weeklyPercent
+        });
+        return;
+      }
+
+      if (event.type === "approvalRequest") {
+        setPendingApproval({
+          approvalId: event.approvalId,
+          toolName: event.toolName,
+          input: event.input
+        });
+        return;
+      }
+
+      if (event.type === "askUser") {
+        setPendingQuestion({
+          approvalId: event.approvalId,
+          questions: event.input.questions
         });
         return;
       }
@@ -255,6 +295,8 @@ export function useChatStream(
       }
 
       if (event.type === "done") {
+        setPendingApproval(null);
+        setPendingQuestion(null);
         setThreads((current) =>
           current.map((thread) => {
             if (thread.id !== active.threadId) {
@@ -290,6 +332,8 @@ export function useChatStream(
       }
 
       if (event.type === "aborted") {
+        setPendingApproval(null);
+        setPendingQuestion(null);
         setStatus("Response interrupted.");
         setIsSending(false);
         setIsThinking(false);
@@ -301,6 +345,8 @@ export function useChatStream(
       }
 
       if (event.type === "error") {
+        setPendingApproval(null);
+        setPendingQuestion(null);
         const friendlyError = normalizeErrorMessage(event.error);
         setThreads((current) =>
           current.map((thread) => {
@@ -361,6 +407,33 @@ export function useChatStream(
       setTimelineOpen(false);
     }
   }, [activeToolTimeline.length, isSending]);
+
+  const onApprove = useCallback(async (approvalId: string, input: Record<string, unknown>) => {
+    setPendingApproval(null);
+    await window.desktop.chat.respondToApproval(approvalId, {
+      behavior: "allow",
+      updatedInput: input
+    });
+  }, []);
+
+  const onDeny = useCallback(async (approvalId: string) => {
+    setPendingApproval(null);
+    await window.desktop.chat.respondToApproval(approvalId, {
+      behavior: "deny",
+      message: "User denied."
+    });
+  }, []);
+
+  const onAnswerQuestion = useCallback(
+    async (approvalId: string, answers: Record<string, string>) => {
+      setPendingQuestion(null);
+      await window.desktop.chat.respondToApproval(approvalId, {
+        behavior: "allow",
+        updatedInput: { answers }
+      });
+    },
+    []
+  );
 
   const onAbortStream = useCallback(async () => {
     const active = activeStreamRef.current;
@@ -556,6 +629,11 @@ export function useChatStream(
     limitsWarning,
     slashCommands,
     isSending,
+    pendingApproval,
+    pendingQuestion,
+    onApprove,
+    onDeny,
+    onAnswerQuestion,
     onAbortStream,
     onSubmit
   };

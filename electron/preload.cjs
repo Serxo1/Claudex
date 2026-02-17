@@ -61,7 +61,7 @@ contextBridge.exposeInMainWorld("desktop", {
     send: (payload) => ipcRenderer.invoke("chat:send", payload),
     startStream: (payload) => ipcRenderer.invoke("chat:streamStart", payload),
     abortStream: (requestId) => ipcRenderer.invoke("chat:streamAbort", requestId),
-    provideToolResponse: (requestId, answer) => ipcRenderer.invoke("chat:provideToolResponse", requestId, answer),
+    respondToApproval: (approvalId, response) => ipcRenderer.invoke("chat:approvalResponse", approvalId, response),
     onStreamEvent: (callback) => {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on("chat:streamEvent", listener);

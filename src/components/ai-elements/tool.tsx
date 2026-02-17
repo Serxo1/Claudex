@@ -29,19 +29,25 @@ export const Tool = ({ className, ...props }: ToolProps) => (
 
 export type ToolPart = ToolUIPart | DynamicToolUIPart;
 
+type ExtendedToolState =
+  | ToolPart["state"]
+  | "approval-requested"
+  | "approval-responded"
+  | "output-denied";
+
 export type ToolHeaderProps = {
   title?: string;
   className?: string;
 } & (
-  | { type: ToolUIPart["type"]; state: ToolUIPart["state"]; toolName?: never }
+  | { type: ToolUIPart["type"]; state: ExtendedToolState; toolName?: never }
   | {
       type: DynamicToolUIPart["type"];
-      state: DynamicToolUIPart["state"];
+      state: ExtendedToolState;
       toolName: string;
     }
 );
 
-const statusLabels: Record<ToolPart["state"], string> = {
+const statusLabels: Record<ExtendedToolState, string> = {
   "approval-requested": "Awaiting Approval",
   "approval-responded": "Responded",
   "input-available": "Running",
@@ -51,7 +57,7 @@ const statusLabels: Record<ToolPart["state"], string> = {
   "output-error": "Error"
 };
 
-const statusIcons: Record<ToolPart["state"], ReactNode> = {
+const statusIcons: Record<ExtendedToolState, ReactNode> = {
   "approval-requested": <ClockIcon className="size-4 text-yellow-600" />,
   "approval-responded": <CheckCircleIcon className="size-4 text-blue-600" />,
   "input-available": <ClockIcon className="size-4 animate-pulse" />,
@@ -61,7 +67,7 @@ const statusIcons: Record<ToolPart["state"], ReactNode> = {
   "output-error": <XCircleIcon className="size-4 text-red-600" />
 };
 
-export const getStatusBadge = (status: ToolPart["state"]) => (
+export const getStatusBadge = (status: ExtendedToolState) => (
   <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
     {statusIcons[status]}
     {statusLabels[status]}

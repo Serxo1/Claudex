@@ -35,8 +35,7 @@ import { Sidebar } from "@/components/chat/sidebar";
 import { HeaderBar } from "@/components/chat/header-bar";
 import { ChatMessages } from "@/components/chat/chat-messages";
 import { PromptArea } from "@/components/chat/prompt-area";
-
-const EMPTY_ARRAY: never[] = [];
+import { ToolApproval, AskUserQuestion } from "@/components/chat/tool-approval";
 
 export function ChatShell() {
   const [input, setInput] = useState("");
@@ -65,39 +64,11 @@ export function ChatShell() {
   const cleanupStreamListener = useChatStore((s) => s.cleanupStreamListener);
   const persistThreads = useChatStore((s) => s.persistThreads);
   const isSending = useChatStore((s) => s.isSending);
-  const executionRequestId = useChatStore((s) => s.executionRequestId);
-  const activeToolTimeline = useChatStore((s) =>
-    s.executionRequestId
-      ? (s.activeToolTimelineByRequest[s.executionRequestId] ?? EMPTY_ARRAY)
-      : EMPTY_ARRAY
-  );
-  const pendingTools = useMemo(
-    () => activeToolTimeline.filter((item) => item.status === "pending"),
-    [activeToolTimeline]
-  );
-  const completedTools = useMemo(
-    () => activeToolTimeline.filter((item) => item.status !== "pending"),
-    [activeToolTimeline]
-  );
-  const pendingAskQuestions = useMemo(() => {
-    const item = activeToolTimeline.find(
-      (i) => i.name === "AskUserQuestion" && i.status === "pending"
-    );
-    if (!item) return null;
-    try {
-      type AskOption = { label: string; description?: string };
-      type AskQuestion = {
-        question: string;
-        header?: string;
-        multiSelect?: boolean;
-        options?: AskOption[];
-      };
-      const parsed = JSON.parse(item.inputSummary) as { questions?: AskQuestion[] };
-      return parsed.questions ?? null;
-    } catch {
-      return null;
-    }
-  }, [activeToolTimeline]);
+  const pendingApproval = useChatStore((s) => s.pendingApproval);
+  const pendingQuestion = useChatStore((s) => s.pendingQuestion);
+  const onApprove = useChatStore((s) => s.onApprove);
+  const onDeny = useChatStore((s) => s.onDeny);
+  const onAnswerQuestion = useChatStore((s) => s.onAnswerQuestion);
 
   const terminalHook = useTerminal(setStatus);
   const previewHook = usePreview();
@@ -196,13 +167,6 @@ export function ChatShell() {
     return options;
   }, [settings?.model]);
 
-  const taskTitle =
-    pendingTools.length > 0
-      ? "Executing tools"
-      : completedTools.some((item) => item.status === "error")
-        ? "Tools completed with issues"
-        : "Execution summary";
-
   const showRightPanel = activePage === "preview" || editorTabs.length > 0;
   const chatContainerMax = showRightPanel ? "max-w-none" : "max-w-4xl";
 
@@ -250,46 +214,15 @@ export function ChatShell() {
               showRightPanel ? "w-[46%] min-w-[420px] shrink-0 border-r border-border/70" : ""
             )}
           >
-            <ChatMessages
-              activePage={activePage}
-              taskTitle={taskTitle}
-              chatContainerMax={chatContainerMax}
-            />
+            <ChatMessages activePage={activePage} chatContainerMax={chatContainerMax} />
 
-            {pendingAskQuestions ? (
-              <div className="border-t border-yellow-500/20 bg-yellow-500/5 px-3 py-3 lg:px-6">
-                <div className={cn("mx-auto w-full space-y-3", chatContainerMax)}>
-                  <span className="text-xs font-semibold uppercase tracking-wide text-yellow-500">
-                    Pergunta do agente
-                  </span>
-                  {pendingAskQuestions.map((q, i) => (
-                    <div className="space-y-2" key={i}>
-                      {q.header ? (
-                        <p className="text-[10px] font-semibold uppercase tracking-wide text-yellow-500/70">
-                          {q.header}
-                        </p>
-                      ) : null}
-                      <p className="text-sm font-medium">{q.question}</p>
-                      {q.options && q.options.length > 0 ? (
-                        <div className="flex flex-wrap gap-1.5">
-                          {q.options.map((opt, j) => (
-                            <button
-                              className="rounded-full border border-yellow-500/40 bg-yellow-500/10 px-3 py-1 text-xs text-yellow-300 hover:bg-yellow-500/20 transition-colors"
-                              key={j}
-                              onClick={() => setInput(opt.label)}
-                              title={opt.description}
-                              type="button"
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
+            {pendingApproval && (
+              <ToolApproval approval={pendingApproval} onApprove={onApprove} onDeny={onDeny} />
+            )}
+
+            {pendingQuestion && (
+              <AskUserQuestion question={pendingQuestion} onAnswer={onAnswerQuestion} />
+            )}
 
             <PromptArea
               input={input}

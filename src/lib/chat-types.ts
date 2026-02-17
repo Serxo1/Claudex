@@ -137,6 +137,29 @@ export type ChatStreamEvent =
       type: "permissionDenials";
       provider: ChatProvider;
       denials: string[];
+    }
+  | {
+      requestId: string;
+      type: "approvalRequest";
+      provider: ChatProvider;
+      approvalId: string;
+      toolName: string;
+      input: Record<string, unknown>;
+    }
+  | {
+      requestId: string;
+      type: "askUser";
+      provider: ChatProvider;
+      approvalId: string;
+      toolName: string;
+      input: {
+        questions: Array<{
+          question: string;
+          header: string;
+          options: Array<{ label: string; description: string }>;
+          multiSelect: boolean;
+        }>;
+      };
     };
 
 export interface WorkspaceInfo {

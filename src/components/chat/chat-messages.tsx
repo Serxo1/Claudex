@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { CheckCircle2, CircleAlert, Clock3, Wrench } from "lucide-react";
+import { CheckCircle2, CircleAlert, Clock3, ChevronDownIcon, Wrench } from "lucide-react";
 import {
   Attachment,
   AttachmentHoverCard,
@@ -9,12 +9,6 @@ import {
   AttachmentPreview,
   Attachments
 } from "@/components/ai-elements/attachments";
-import {
-  ChainOfThought,
-  ChainOfThoughtContent,
-  ChainOfThoughtHeader,
-  ChainOfThoughtStep
-} from "@/components/ai-elements/chain-of-thought";
 import {
   Commit,
   CommitAuthor,
@@ -39,20 +33,8 @@ import {
 } from "@/components/ai-elements/commit";
 import { Conversation, ConversationContent } from "@/components/ai-elements/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
-import {
-  Queue,
-  QueueItem,
-  QueueItemContent,
-  QueueItemDescription,
-  QueueItemIndicator,
-  QueueList,
-  QueueSection,
-  QueueSectionContent,
-  QueueSectionLabel,
-  QueueSectionTrigger
-} from "@/components/ai-elements/queue";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
-import { Task, TaskContent, TaskItem, TaskTrigger } from "@/components/ai-elements/task";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { initialsFromName, toAttachmentData } from "@/lib/chat-utils";
 import { useGitStore } from "@/stores/git-store";
@@ -62,11 +44,10 @@ const EMPTY_ARRAY: never[] = [];
 
 export type ChatMessagesProps = {
   activePage: "chat" | "preview";
-  taskTitle: string;
   chatContainerMax: string;
 };
 
-export function ChatMessages({ activePage, taskTitle, chatContainerMax }: ChatMessagesProps) {
+export function ChatMessages({ activePage, chatContainerMax }: ChatMessagesProps) {
   const recentCommits = useGitStore((s) => s.recentCommits);
 
   const messages = useChatStore((s) => {
@@ -87,14 +68,9 @@ export function ChatMessages({ activePage, taskTitle, chatContainerMax }: ChatMe
     () => activeToolTimeline.filter((item) => item.status === "pending"),
     [activeToolTimeline]
   );
-  const completedTools = useMemo(
-    () => activeToolTimeline.filter((item) => item.status !== "pending"),
-    [activeToolTimeline]
-  );
+  const isSending = useChatStore((s) => s.isSending);
   const taskOpen = useChatStore((s) => s.taskOpen);
   const setTaskOpen = useChatStore((s) => s.setTaskOpen);
-  const timelineOpen = useChatStore((s) => s.timelineOpen);
-  const setTimelineOpen = useChatStore((s) => s.setTimelineOpen);
   const compactCount = useChatStore((s) => s.compactCount);
   const permissionDenials = useChatStore((s) => s.permissionDenials);
   const sessionCostUsd = useChatStore((s) => s.sessionCostUsd);
@@ -174,100 +150,60 @@ export function ChatMessages({ activePage, taskTitle, chatContainerMax }: ChatMe
                   ) : null}
 
                   {activeToolTimeline.length > 0 ? (
-                    <>
-                      <Task onOpenChange={setTaskOpen} open={taskOpen}>
-                        <TaskTrigger title={taskTitle} />
-                        <TaskContent>
+                    <Collapsible onOpenChange={setTaskOpen} open={taskOpen}>
+                      <CollapsibleTrigger className="group flex items-center gap-1.5 text-xs text-muted-foreground/60 transition-colors hover:text-muted-foreground">
+                        <Wrench className="size-3 shrink-0" />
+                        {isSending && pendingTools.length > 0 ? (
+                          <>
+                            <span className="shrink-0 font-mono">
+                              {pendingTools[pendingTools.length - 1]?.name}
+                            </span>
+                            <span className="max-w-56 truncate text-muted-foreground/40">
+                              {pendingTools[pendingTools.length - 1]?.inputSummary}
+                            </span>
+                          </>
+                        ) : (
+                          <span>
+                            {activeToolTimeline.length}{" "}
+                            {activeToolTimeline.length === 1 ? "ferramenta" : "ferramentas"}
+                          </span>
+                        )}
+                        <ChevronDownIcon className="ml-0.5 size-3 transition-transform group-data-[state=open]:rotate-180" />
+                      </CollapsibleTrigger>
+                      <CollapsibleContent className="mt-1.5">
+                        <div className="space-y-0.5 pl-1">
                           {activeToolTimeline.map((item) => (
-                            <TaskItem key={`task-${item.toolUseId}`}>
-                              {item.status === "pending"
-                                ? "Running"
-                                : item.status === "error"
-                                  ? "Failed"
-                                  : "Completed"}{" "}
-                              {item.name}
-                            </TaskItem>
-                          ))}
-                        </TaskContent>
-                      </Task>
-
-                      <Queue>
-                        <QueueSection defaultOpen>
-                          <QueueSectionTrigger>
-                            <QueueSectionLabel
-                              count={pendingTools.length}
-                              icon={<Clock3 className="size-3.5" />}
-                              label="Pending"
-                            />
-                          </QueueSectionTrigger>
-                          <QueueSectionContent>
-                            <QueueList>
-                              {pendingTools.map((item) => (
-                                <QueueItem key={`pending-${item.toolUseId}`}>
-                                  <div className="flex items-start gap-2">
-                                    <QueueItemIndicator />
-                                    <QueueItemContent>{item.name}</QueueItemContent>
-                                  </div>
-                                  <QueueItemDescription>{item.inputSummary}</QueueItemDescription>
-                                </QueueItem>
-                              ))}
-                            </QueueList>
-                          </QueueSectionContent>
-                        </QueueSection>
-
-                        <QueueSection defaultOpen>
-                          <QueueSectionTrigger>
-                            <QueueSectionLabel
-                              count={completedTools.length}
-                              icon={<Wrench className="size-3.5" />}
-                              label="Completed"
-                            />
-                          </QueueSectionTrigger>
-                          <QueueSectionContent>
-                            <QueueList>
-                              {completedTools.map((item) => (
-                                <QueueItem key={`completed-${item.toolUseId}`}>
-                                  <div className="flex items-start gap-2">
-                                    <QueueItemIndicator completed />
-                                    <QueueItemContent completed>{item.name}</QueueItemContent>
-                                  </div>
-                                  <QueueItemDescription completed>
-                                    {item.status === "error"
-                                      ? `Completed with error: ${item.resultSummary}`
-                                      : item.resultSummary}
-                                  </QueueItemDescription>
-                                </QueueItem>
-                              ))}
-                            </QueueList>
-                          </QueueSectionContent>
-                        </QueueSection>
-                      </Queue>
-
-                      <ChainOfThought onOpenChange={setTimelineOpen} open={timelineOpen}>
-                        <ChainOfThoughtHeader>Tool execution timeline</ChainOfThoughtHeader>
-                        <ChainOfThoughtContent>
-                          {activeToolTimeline.map((item) => (
-                            <ChainOfThoughtStep
-                              description={
-                                item.status === "pending"
+                            <div
+                              className="flex items-center gap-1.5 py-0.5 text-xs"
+                              key={item.toolUseId}
+                            >
+                              {item.status === "pending" ? (
+                                <Clock3 className="size-3 shrink-0 animate-pulse text-muted-foreground/50" />
+                              ) : item.status === "error" ? (
+                                <CircleAlert className="size-3 shrink-0 text-destructive/60" />
+                              ) : (
+                                <CheckCircle2 className="size-3 shrink-0 text-muted-foreground/30" />
+                              )}
+                              <span
+                                className={cn(
+                                  "shrink-0 font-mono",
+                                  item.status === "error"
+                                    ? "text-destructive/70"
+                                    : "text-muted-foreground/50"
+                                )}
+                              >
+                                {item.name}
+                              </span>
+                              <span className="truncate text-muted-foreground/35">
+                                {item.status === "pending"
                                   ? item.inputSummary
-                                  : item.resultSummary || item.inputSummary
-                              }
-                              icon={
-                                item.status === "pending"
-                                  ? Clock3
-                                  : item.status === "error"
-                                    ? CircleAlert
-                                    : CheckCircle2
-                              }
-                              key={`timeline-${item.toolUseId}`}
-                              label={item.status === "error" ? `${item.name} (error)` : item.name}
-                              status={item.status === "pending" ? "active" : "complete"}
-                            />
+                                  : item.resultSummary || item.inputSummary}
+                              </span>
+                            </div>
                           ))}
-                        </ChainOfThoughtContent>
-                      </ChainOfThought>
-                    </>
+                        </div>
+                      </CollapsibleContent>
+                    </Collapsible>
                   ) : null}
 
                   {message.content.trim() ? (

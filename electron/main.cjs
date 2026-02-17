@@ -687,7 +687,7 @@ app.whenReady().then(() => {
     const resumeSessionId = hasImageContext ? "" : current.claudeCliSessionId;
     const forcedSessionId = hasImageContext ? randomUUID() : "";
 
-    chat.startClaudeCliStream({
+    void chat.startSDKStream({
       webContents: event.sender,
       requestId,
       messages,
@@ -724,9 +724,9 @@ app.whenReady().then(() => {
     return { ok: true };
   });
 
-  ipcMain.handle("chat:provideToolResponse", (_event, requestId, answer) => {
-    if (typeof requestId !== "string" || typeof answer !== "string") return { ok: false };
-    const ok = chat.provideToolResponse(requestId, answer);
+  ipcMain.handle("chat:approvalResponse", (_event, approvalId, response) => {
+    if (typeof approvalId !== "string") return { ok: false };
+    const ok = chat.resolveApproval(approvalId, response);
     return { ok };
   });
 

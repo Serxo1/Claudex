@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@ai-sdk/react": "^2.0.57",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.45",
     "@monaco-editor/react": "^4.7.0",
     "@radix-ui/react-use-controllable-state": "^1.2.2",
     "@rive-app/react-webgl2": "^4.27.0",

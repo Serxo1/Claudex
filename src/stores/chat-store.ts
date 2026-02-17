@@ -7,6 +7,22 @@ import type {
   Thread,
   ToolTimelineItem
 } from "@/lib/chat-types";
+
+export type PendingApproval = {
+  approvalId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+};
+
+export type PendingQuestion = {
+  approvalId: string;
+  questions: Array<{
+    question: string;
+    header: string;
+    options: Array<{ label: string; description: string }>;
+    multiSelect: boolean;
+  }>;
+};
 import { FALLBACK_SLASH_COMMANDS, THREADS_STORAGE_KEY } from "@/lib/chat-types";
 import {
   appendReasoningLine,
@@ -19,6 +35,7 @@ import type { FormEvent } from "react";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useGitStore } from "@/stores/git-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
+import { usePermissionsStore } from "@/stores/permissions-store";
 
 function makeMessage(
   role: "user" | "assistant",
@@ -136,6 +153,8 @@ type ChatState = {
   compactCount: number;
   permissionDenials: string[];
   sessionCostUsd: number | null;
+  pendingApproval: PendingApproval | null;
+  pendingQuestion: PendingQuestion | null;
 
   // Internal ref (not reactive, just storage)
   _activeStreamRef: ActiveStreamRef;
@@ -157,6 +176,9 @@ type ChatState = {
   persistThreads: () => void;
   initStreamListener: () => void;
   cleanupStreamListener: () => void;
+  onApprove: (approvalId: string, input: Record<string, unknown>) => Promise<void>;
+  onDeny: (approvalId: string) => Promise<void>;
+  onAnswerQuestion: (approvalId: string, answers: Record<string, string>) => Promise<void>;
   onAbortStream: () => Promise<void>;
   onSubmit: (
     message: {
@@ -189,6 +211,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   compactCount: 0,
   permissionDenials: [],
   sessionCostUsd: null,
+  pendingApproval: null,
+  pendingQuestion: null,
 
   _activeStreamRef: null,
   _unsubscribeStream: null,
@@ -273,6 +297,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set((state) => ({
           permissionDenials: [...new Set([...state.permissionDenials, ...event.denials])]
         }));
+        return;
+      }
+
+      if (event.type === "approvalRequest") {
+        // Auto-aprovação se existe regra persistida
+        if (usePermissionsStore.getState().matchesRule(event.toolName, event.input)) {
+          void window.desktop.chat.respondToApproval(event.approvalId, {
+            behavior: "allow",
+            updatedInput: event.input
+          });
+          return;
+        }
+        set({
+          pendingApproval: {
+            approvalId: event.approvalId,
+            toolName: event.toolName,
+            input: event.input
+          }
+        });
+        return;
+      }
+
+      if (event.type === "askUser") {
+        set({
+          pendingQuestion: {
+            approvalId: event.approvalId,
+            questions: event.input.questions
+          }
+        });
         return;
       }
 
@@ -413,6 +466,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             taskOpen: false,
             timelineOpen: false,
             sessionCostUsd: event.sessionCostUsd ?? null,
+            pendingApproval: null,
+            pendingQuestion: null,
             _activeStreamRef: null
           };
         });
@@ -433,6 +488,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           reasoningOpen: false,
           taskOpen: false,
           timelineOpen: false,
+          pendingApproval: null,
+          pendingQuestion: null,
           _activeStreamRef: null
         });
         useSettingsStore.getState().setStatus("Response interrupted.");
@@ -470,6 +527,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             reasoningOpen: false,
             taskOpen: false,
             timelineOpen: false,
+            pendingApproval: null,
+            pendingQuestion: null,
             _activeStreamRef: null
           };
         });
@@ -487,6 +546,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
       void window.desktop.chat.abortStream(_activeStreamRef.requestId);
     }
     set({ _unsubscribeStream: null });
+  },
+
+  onApprove: async (approvalId, input) => {
+    set({ pendingApproval: null });
+    await window.desktop.chat.respondToApproval(approvalId, {
+      behavior: "allow",
+      updatedInput: input
+    });
+  },
+
+  onDeny: async (approvalId) => {
+    set({ pendingApproval: null });
+    await window.desktop.chat.respondToApproval(approvalId, {
+      behavior: "deny",
+      message: "User denied."
+    });
+  },
+
+  onAnswerQuestion: async (approvalId, answers) => {
+    set({ pendingQuestion: null });
+    await window.desktop.chat.respondToApproval(approvalId, {
+      behavior: "allow",
+      updatedInput: { answers }
+    });
   },
 
   onAbortStream: async () => {
