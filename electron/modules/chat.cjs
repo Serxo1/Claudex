@@ -7,6 +7,370 @@ const { ANTHROPIC_API_URL, ANTHROPIC_API_VERSION, MAX_TOKENS_DEFAULT, CONTEXT_WI
 
 const activeStreamRequests = new Map();
 
+// ---------------------------------------------------------------------------
+// Persistent CLI session
+// ---------------------------------------------------------------------------
+
+/** @type {CliSession | null} */
+let currentCliSession = null;
+
+class CliSession {
+  constructor({ model, effort, workspaceDirs, resumeSessionId }) {
+    this.model = model || "";
+    this.effort = effort || "";
+    this.workspaceDirs = [...(workspaceDirs || [])];
+    this.sessionId = resumeSessionId || "";
+    this.dead = false;
+    this.buffer = "";
+    this.stderrBuffer = "";
+    this.spawnError = "";
+
+    // Per-request state
+    this.requestId = null;
+    this.webContents = null;
+    this.finished = true;
+    this.streamedText = "";
+    this.finalText = "";
+    this.sessionCostUsd = null;
+    this.errorSubtype = "";
+    this.permissionMode = "";
+    this.aborted = false;
+    this.currentMessage = "";
+    this.stdout = "";
+
+    // Callbacks
+    this.onSessionId = null;
+    this.onSessionReset = null;
+
+    // Cached init data from system:init event
+    this.initData = null;
+
+    this._spawn();
+  }
+
+  _spawn() {
+    const args = ["--output-format", "stream-json", "--include-partial-messages", "--verbose"];
+    if (this.model) args.push("--model", this.model);
+    if (shouldApplyEffort(this.model, this.effort)) args.push("--effort", this.effort);
+    if (this.sessionId) args.push("--resume", this.sessionId);
+    for (const dir of this.workspaceDirs) args.push("--add-dir", dir);
+
+    const { CLAUDECODE: _cc, ...safeEnv } = process.env;
+    try {
+      this.child = spawn("claude", args, { stdio: ["pipe", "pipe", "pipe"], env: safeEnv });
+    } catch (err) {
+      this.dead = true;
+      this.spawnError = err.message || String(err);
+      return;
+    }
+
+    this.child.stdout.on("data", (chunk) => this._onData(chunk));
+    this.child.stderr.on("data", (chunk) => { this.stderrBuffer += chunk.toString(); });
+    this.child.on("error", (err) => {
+      this.dead = true;
+      this.spawnError = err.message || String(err);
+      this._onProcessDie("error");
+    });
+    this.child.on("close", (code) => {
+      this.dead = true;
+      this._onProcessDie(code);
+    });
+  }
+
+  setRequest(requestId, webContents, onSessionId, onSessionReset) {
+    this.requestId = requestId;
+    this.webContents = webContents;
+    this.onSessionId = onSessionId;
+    this.onSessionReset = onSessionReset;
+    this.finished = false;
+    this.streamedText = "";
+    this.finalText = "";
+    this.sessionCostUsd = null;
+    this.errorSubtype = "";
+    this.aborted = false;
+    this.currentMessage = "";
+    this.stdout = "";
+    this.stderrBuffer = "";
+  }
+
+  sendMessage(message) {
+    this.currentMessage = message;
+    if (this.dead || !this.child?.stdin?.writable) return;
+    try {
+      this.child.stdin.write(message + "\n");
+    } catch {
+      // Handled via error event
+    }
+  }
+
+  provideToolResponse(answer) {
+    if (this.dead || this.finished || !this.child?.stdin?.writable) return false;
+    try {
+      this.child.stdin.write(answer + "\n");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  abort() {
+    if (this.aborted) return;
+    this.aborted = true;
+    this.kill();
+  }
+
+  kill() {
+    this.dead = true;
+    if (currentCliSession === this) currentCliSession = null;
+    try { this.child?.kill("SIGTERM"); } catch {}
+  }
+
+  _onData(chunk) {
+    const text = chunk.toString();
+    this.stdout += text;
+    this.buffer += text;
+    let idx;
+    while ((idx = this.buffer.indexOf("\n")) >= 0) {
+      const line = this.buffer.slice(0, idx).trim();
+      this.buffer = this.buffer.slice(idx + 1);
+      if (line) this._handleLine(line);
+    }
+  }
+
+  _handleLine(line) {
+    let parsed;
+    try { parsed = JSON.parse(line); } catch { return; }
+
+    if (typeof parsed.session_id === "string" && parsed.session_id) {
+      this.sessionId = parsed.session_id;
+    }
+
+    // system:init is session-level (can arrive before first request)
+    if (parsed.type === "system" && parsed.subtype === "init") {
+      const slashCommands = Array.isArray(parsed.slash_commands)
+        ? parsed.slash_commands.filter((c) => typeof c === "string" && c.trim())
+        : [];
+      const permissionMode = typeof parsed.permissionMode === "string" ? parsed.permissionMode : "";
+      this.initData = { slashCommands, permissionMode };
+      if (permissionMode) this.permissionMode = permissionMode;
+
+      // Forward to active request if there is one
+      if (this.requestId && !this.finished) {
+        if (slashCommands.length > 0) {
+          sendStreamEvent(this.webContents, {
+            requestId: this.requestId, type: "slashCommands",
+            provider: "claude-cli", commands: slashCommands
+          });
+        }
+        if (permissionMode) {
+          sendStreamEvent(this.webContents, {
+            requestId: this.requestId, type: "status",
+            provider: "claude-cli", permissionMode, context: null
+          });
+        }
+      }
+      return;
+    }
+
+    // All other events require an active request
+    const requestId = this.requestId;
+    if (!requestId || this.finished) return;
+
+    if (parsed.type === "system" && parsed.subtype === "compact_boundary") {
+      sendStreamEvent(this.webContents, { requestId, type: "compactBoundary", provider: "claude-cli" });
+      return;
+    }
+
+    if (parsed.type === "system") {
+      const limitsHint = extractLimitsHint(parsed);
+      if (limitsHint) {
+        sendStreamEvent(this.webContents, {
+          requestId, type: "limits", provider: "claude-cli",
+          level: limitsHint.level, message: limitsHint.message,
+          fiveHourPercent: limitsHint.fiveHourPercent,
+          weeklyPercent: limitsHint.weeklyPercent
+        });
+      }
+      return;
+    }
+
+    if (
+      parsed.type === "stream_event" &&
+      parsed.event?.type === "content_block_delta" &&
+      parsed.event?.delta?.type === "text_delta"
+    ) {
+      const delta = typeof parsed.event.delta.text === "string" ? parsed.event.delta.text : "";
+      if (!delta) return;
+      this.streamedText += delta;
+      sendStreamEvent(this.webContents, {
+        requestId, type: "delta", delta,
+        content: this.streamedText, provider: "claude-cli"
+      });
+      return;
+    }
+
+    if (parsed.type === "assistant") {
+      const blocks = Array.isArray(parsed.message?.content) ? parsed.message.content : [];
+      for (const block of blocks) {
+        if (!block || block.type !== "tool_use") continue;
+        const toolUseId =
+          typeof block.id === "string" && block.id.trim() ? block.id.trim()
+          : typeof block.tool_use_id === "string" && block.tool_use_id.trim() ? block.tool_use_id.trim()
+          : randomUUID();
+        const name = typeof block.name === "string" && block.name.trim() ? block.name.trim() : "tool";
+        const input = block.input && typeof block.input === "object" && !Array.isArray(block.input)
+          ? block.input : null;
+        sendStreamEvent(this.webContents, {
+          requestId, type: "toolUse", provider: "claude-cli",
+          toolUseId, name, input, timestamp: Date.now()
+        });
+      }
+      const messageText = extractTextFromClaudeMessageContent(parsed.message?.content);
+      if (messageText) this.finalText = messageText;
+      if (typeof parsed.session_id === "string" && parsed.session_id) {
+        this.sessionId = parsed.session_id;
+      }
+      return;
+    }
+
+    if (parsed.type === "user") {
+      const blocks = Array.isArray(parsed.message?.content) ? parsed.message.content : [];
+      for (const block of blocks) {
+        if (!block || block.type !== "tool_result") continue;
+        const toolUseId =
+          typeof block.tool_use_id === "string" && block.tool_use_id.trim() ? block.tool_use_id.trim()
+          : typeof block.toolUseId === "string" && block.toolUseId.trim() ? block.toolUseId.trim()
+          : randomUUID();
+        const isError = Boolean(block.is_error || block.isError);
+        sendStreamEvent(this.webContents, {
+          requestId, type: "toolResult", provider: "claude-cli",
+          toolUseId, isError, content: block.content, timestamp: Date.now()
+        });
+      }
+      return;
+    }
+
+    if (parsed.type === "result") {
+      if (typeof parsed.result === "string" && parsed.result.trim()) {
+        this.finalText = parsed.result.trim();
+      }
+      if (typeof parsed.session_id === "string" && parsed.session_id) {
+        this.sessionId = parsed.session_id;
+      }
+      if (parsed.is_error) {
+        this.errorSubtype = typeof parsed.subtype === "string" && parsed.subtype
+          ? parsed.subtype : "error";
+      }
+      if (typeof parsed.total_cost_usd === "number" && Number.isFinite(parsed.total_cost_usd)) {
+        this.sessionCostUsd = parsed.total_cost_usd;
+      }
+      if (Array.isArray(parsed.permission_denials) && parsed.permission_denials.length > 0) {
+        sendStreamEvent(this.webContents, {
+          requestId, type: "permissionDenials", provider: "claude-cli",
+          denials: parsed.permission_denials.filter((d) => typeof d === "string" && d.trim())
+        });
+      }
+
+      const usage = parsed.usage || {};
+      const modelUsage = parsed.modelUsage || {};
+      const primaryModel = Object.values(modelUsage)[0];
+      const maxTokens = primaryModel && Number.isFinite(primaryModel.contextWindow)
+        ? Number(primaryModel.contextWindow) : CONTEXT_WINDOW_DEFAULT;
+      const inputTokens = Number(usage.input_tokens) || 0;
+      const outputTokens = Number(usage.output_tokens) || 0;
+      const cacheReadInputTokens = Number(usage.cache_read_input_tokens) || 0;
+      const cacheCreationInputTokens = Number(usage.cache_creation_input_tokens) || 0;
+      const usedTokens = inputTokens + outputTokens + cacheReadInputTokens + cacheCreationInputTokens;
+      const percent = maxTokens > 0
+        ? Math.max(0, Math.min(100, Math.round((usedTokens / maxTokens) * 100))) : 0;
+
+      sendStreamEvent(this.webContents, {
+        requestId, type: "status", provider: "claude-cli",
+        permissionMode: this.permissionMode || "unknown",
+        context: { usedTokens, maxTokens, percent, inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens }
+      });
+
+      this._finishRequest(parsed);
+    }
+  }
+
+  _finishRequest(resultParsed) {
+    if (this.finished) return;
+    this.finished = true;
+
+    const requestId = this.requestId;
+    activeStreamRequests.delete(requestId);
+
+    if (this.sessionId && typeof this.onSessionId === "function") {
+      this.onSessionId(this.sessionId);
+    }
+
+    if (this.aborted) {
+      sendStreamEvent(this.webContents, { requestId, type: "aborted", provider: "claude-cli" });
+      return;
+    }
+
+    if (resultParsed?.is_error) {
+      const detail = buildClaudeCliErrorDetail(this.stdout, this.stderrBuffer, 1);
+      const errorMsg = resultParsed.result || detail;
+      if (this.sessionId && isRecoverableResumeError(errorMsg) && typeof this.onSessionReset === "function") {
+        this.onSessionReset();
+        this.sessionId = "";
+      }
+      sendStreamEvent(this.webContents, {
+        requestId, type: "error",
+        error: `Claude CLI failed: ${errorMsg}`,
+        errorSubtype: this.errorSubtype || "error",
+        provider: "claude-cli"
+      });
+      return;
+    }
+
+    let content = (this.finalText || this.streamedText || "").trim();
+    if (!content && isSlashCommandPrompt(this.currentMessage)) {
+      const command = this.currentMessage.trim().split(/\s+/)[0] || "/command";
+      content = command === "/compact" ? "Compacted." : `${command} executed.`;
+    }
+
+    sendStreamEvent(this.webContents, {
+      requestId, type: "done", content,
+      sessionCostUsd: this.sessionCostUsd, provider: "claude-cli"
+    });
+  }
+
+  _onProcessDie(code) {
+    if (!this.requestId || this.finished) return;
+    this.finished = true;
+
+    const requestId = this.requestId;
+    activeStreamRequests.delete(requestId);
+
+    if (this.aborted) {
+      sendStreamEvent(this.webContents, { requestId, type: "aborted", provider: "claude-cli" });
+      return;
+    }
+
+    if (this.spawnError) {
+      sendStreamEvent(this.webContents, {
+        requestId, type: "error",
+        error: `Unable to execute Claude CLI: ${this.spawnError}. Install CLI and run "claude login".`,
+        provider: "claude-cli"
+      });
+      return;
+    }
+
+    const detail = buildClaudeCliErrorDetail(this.stdout, this.stderrBuffer, code);
+    if (this.sessionId && isRecoverableResumeError(detail) && typeof this.onSessionReset === "function") {
+      this.onSessionReset();
+    }
+    sendStreamEvent(this.webContents, {
+      requestId, type: "error",
+      error: `Claude CLI failed: ${detail}`,
+      provider: "claude-cli"
+    });
+  }
+}
+
 function toAnthropicMessages(messages) {
   return messages
     .filter((message) => message.role === "user" || message.role === "assistant")
@@ -358,359 +722,81 @@ function startClaudeCliStream({
   onSessionId,
   onSessionReset
 }) {
-  const prompt = resolveClaudeCliPrompt(messages, resumeSessionId);
-  const args = [
-    "-p",
-    prompt,
-    "--output-format",
-    "stream-json",
-    "--include-partial-messages",
-    "--verbose"
+  const message = getLatestUserPrompt(messages);
+  if (!message) {
+    sendStreamEvent(webContents, {
+      requestId, type: "error",
+      error: "No message to send.", provider: "claude-cli"
+    });
+    return;
+  }
+
+  const contextDirs = collectContextDirs(contextFiles || []);
+  const allDirs = [
+    ...new Set([...(Array.isArray(workspaceDirs) ? workspaceDirs : []), ...contextDirs])
   ];
 
-  if (typeof model === "string" && model.trim()) {
-    args.push("--model", model.trim());
-  }
-  if (shouldApplyEffort(model, effort)) {
-    args.push("--effort", effort.trim());
-  }
-  if (typeof resumeSessionId === "string" && resumeSessionId.trim()) {
-    args.push("--resume", resumeSessionId.trim());
-  }
-  if (typeof forcedSessionId === "string" && forcedSessionId.trim()) {
-    args.push("--session-id", forcedSessionId.trim());
-  }
-  const contextDirs = collectContextDirs(contextFiles || []);
-  const addDirs = [...new Set([...(Array.isArray(workspaceDirs) ? workspaceDirs : []), ...contextDirs])];
-  for (const dir of addDirs) {
-    args.push("--add-dir", dir);
+  // forcedSessionId (used for image context) forces a fresh session
+  const desiredSessionId = forcedSessionId
+    ? forcedSessionId
+    : (currentCliSession?.sessionId || resumeSessionId || "");
+
+  const dirsKey = [...allDirs].sort().join("|");
+  const currentDirsKey = [...(currentCliSession?.workspaceDirs ?? [])].sort().join("|");
+
+  const needNewSession =
+    !currentCliSession ||
+    currentCliSession.dead ||
+    currentCliSession.model !== (model || "") ||
+    currentDirsKey !== dirsKey ||
+    (forcedSessionId && currentCliSession.sessionId !== forcedSessionId) ||
+    (resumeSessionId && !forcedSessionId && currentCliSession.sessionId !== resumeSessionId);
+
+  if (needNewSession) {
+    if (currentCliSession && !currentCliSession.dead) {
+      currentCliSession.kill();
+    }
+    currentCliSession = new CliSession({
+      model: model || "",
+      effort: effort || "",
+      workspaceDirs: allDirs,
+      resumeSessionId: desiredSessionId
+    });
   }
 
-  const { CLAUDECODE: _cc, ...safeEnv } = process.env;
-  const child = spawn("claude", args, {
-    stdio: ["ignore", "pipe", "pipe"],
-    env: safeEnv
-  });
+  const session = currentCliSession;
+  session.setRequest(requestId, webContents, onSessionId, onSessionReset);
 
   const entry = {
     provider: "claude-cli",
     aborted: false,
     abort: () => {
       entry.aborted = true;
-      child.kill("SIGTERM");
+      session.abort();
     }
   };
   activeStreamRequests.set(requestId, entry);
 
-  sendStreamEvent(webContents, {
-    requestId,
-    type: "start",
-    provider: "claude-cli"
-  });
+  // Send start event
+  sendStreamEvent(webContents, { requestId, type: "start", provider: "claude-cli" });
 
-  let stdout = "";
-  let stderr = "";
-  let buffer = "";
-  let streamedText = "";
-  let finalText = "";
-  let sessionId = "";
-  let permissionMode = "";
-  let finished = false;
-  let errorSubtype = "";
-  let sessionCostUsd = null;
-
-  const finish = (eventPayload) => {
-    if (finished) {
-      return;
-    }
-    finished = true;
-    activeStreamRequests.delete(requestId);
-    sendStreamEvent(webContents, eventPayload);
-  };
-
-  const handleLine = (line) => {
-    if (!line) {
-      return;
-    }
-
-    let parsed;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      return;
-    }
-
-    if (typeof parsed.session_id === "string" && parsed.session_id) {
-      sessionId = parsed.session_id;
-    }
-
-    if (parsed.type === "system" && parsed.subtype === "init") {
-      const slashCommands = Array.isArray(parsed.slash_commands)
-        ? parsed.slash_commands.filter((command) => typeof command === "string" && command.trim())
-        : [];
-      if (slashCommands.length > 0) {
-        sendStreamEvent(webContents, {
-          requestId,
-          type: "slashCommands",
-          provider: "claude-cli",
-          commands: slashCommands
-        });
-      }
-      if (typeof parsed.permissionMode === "string" && parsed.permissionMode) {
-        permissionMode = parsed.permissionMode;
-        sendStreamEvent(webContents, {
-          requestId,
-          type: "status",
-          provider: "claude-cli",
-          permissionMode,
-          context: null
-        });
-      }
-      return;
-    }
-
-    if (parsed.type === "system" && parsed.subtype === "compact_boundary") {
+  // Forward cached init data (slash commands, permission mode) to this request
+  if (session.initData) {
+    if (session.initData.slashCommands.length > 0) {
       sendStreamEvent(webContents, {
-        requestId,
-        type: "compactBoundary",
-        provider: "claude-cli"
+        requestId, type: "slashCommands",
+        provider: "claude-cli", commands: session.initData.slashCommands
       });
-      return;
     }
-
-    if (parsed.type === "system") {
-      const limitsHint = extractLimitsHint(parsed);
-      if (limitsHint) {
-        sendStreamEvent(webContents, {
-          requestId,
-          type: "limits",
-          provider: "claude-cli",
-          level: limitsHint.level,
-          message: limitsHint.message,
-          fiveHourPercent: limitsHint.fiveHourPercent,
-          weeklyPercent: limitsHint.weeklyPercent
-        });
-      }
-    }
-
-    if (
-      parsed.type === "stream_event" &&
-      parsed.event?.type === "content_block_delta" &&
-      parsed.event?.delta?.type === "text_delta"
-    ) {
-      const delta = typeof parsed.event.delta.text === "string" ? parsed.event.delta.text : "";
-      if (!delta) {
-        return;
-      }
-
-      streamedText += delta;
+    if (session.initData.permissionMode) {
       sendStreamEvent(webContents, {
-        requestId,
-        type: "delta",
-        delta,
-        content: streamedText,
-        provider: "claude-cli"
-      });
-      return;
-    }
-
-    if (parsed.type === "assistant") {
-      const blocks = Array.isArray(parsed.message?.content) ? parsed.message.content : [];
-      for (const block of blocks) {
-        if (!block || block.type !== "tool_use") {
-          continue;
-        }
-        const toolUseId =
-          typeof block.id === "string" && block.id.trim()
-            ? block.id.trim()
-            : typeof block.tool_use_id === "string" && block.tool_use_id.trim()
-              ? block.tool_use_id.trim()
-              : randomUUID();
-        const name = typeof block.name === "string" && block.name.trim() ? block.name.trim() : "tool";
-        const input =
-          block.input && typeof block.input === "object" && !Array.isArray(block.input) ? block.input : null;
-
-        sendStreamEvent(webContents, {
-          requestId,
-          type: "toolUse",
-          provider: "claude-cli",
-          toolUseId,
-          name,
-          input,
-          timestamp: Date.now()
-        });
-      }
-
-      const messageText = extractTextFromClaudeMessageContent(parsed.message?.content);
-      if (messageText) {
-        finalText = messageText;
-      }
-
-      if (typeof parsed.session_id === "string" && parsed.session_id) {
-        sessionId = parsed.session_id;
-      }
-      return;
-    }
-
-    if (parsed.type === "user") {
-      const blocks = Array.isArray(parsed.message?.content) ? parsed.message.content : [];
-      for (const block of blocks) {
-        if (!block || block.type !== "tool_result") {
-          continue;
-        }
-        const toolUseId =
-          typeof block.tool_use_id === "string" && block.tool_use_id.trim()
-            ? block.tool_use_id.trim()
-            : typeof block.toolUseId === "string" && block.toolUseId.trim()
-              ? block.toolUseId.trim()
-              : randomUUID();
-        const isError = Boolean(block.is_error || block.isError);
-
-        sendStreamEvent(webContents, {
-          requestId,
-          type: "toolResult",
-          provider: "claude-cli",
-          toolUseId,
-          isError,
-          content: block.content,
-          timestamp: Date.now()
-        });
-      }
-      return;
-    }
-
-    if (parsed.type === "result") {
-      if (typeof parsed.result === "string" && parsed.result.trim()) {
-        finalText = parsed.result.trim();
-      }
-      if (typeof parsed.session_id === "string" && parsed.session_id) {
-        sessionId = parsed.session_id;
-      }
-
-      if (parsed.is_error) {
-        errorSubtype = typeof parsed.subtype === "string" && parsed.subtype ? parsed.subtype : "error";
-      }
-
-      if (typeof parsed.total_cost_usd === "number" && Number.isFinite(parsed.total_cost_usd)) {
-        sessionCostUsd = parsed.total_cost_usd;
-      }
-
-      if (Array.isArray(parsed.permission_denials) && parsed.permission_denials.length > 0) {
-        sendStreamEvent(webContents, {
-          requestId,
-          type: "permissionDenials",
-          provider: "claude-cli",
-          denials: parsed.permission_denials.filter((d) => typeof d === "string" && d.trim())
-        });
-      }
-
-      const usage = parsed.usage || {};
-      const modelUsage = parsed.modelUsage || {};
-      const primaryModel = Object.values(modelUsage)[0];
-      const maxTokens =
-        primaryModel && Number.isFinite(primaryModel.contextWindow)
-          ? Number(primaryModel.contextWindow)
-          : CONTEXT_WINDOW_DEFAULT;
-      const inputTokens = Number(usage.input_tokens) || 0;
-      const outputTokens = Number(usage.output_tokens) || 0;
-      const cacheReadInputTokens = Number(usage.cache_read_input_tokens) || 0;
-      const cacheCreationInputTokens = Number(usage.cache_creation_input_tokens) || 0;
-      const usedTokens = inputTokens + outputTokens + cacheReadInputTokens + cacheCreationInputTokens;
-      const percent =
-        maxTokens > 0 ? Math.max(0, Math.min(100, Math.round((usedTokens / maxTokens) * 100))) : 0;
-
-      sendStreamEvent(webContents, {
-        requestId,
-        type: "status",
-        provider: "claude-cli",
-        permissionMode: permissionMode || "unknown",
-        context: {
-          usedTokens,
-          maxTokens,
-          percent,
-          inputTokens,
-          outputTokens,
-          cacheReadInputTokens,
-          cacheCreationInputTokens
-        }
+        requestId, type: "status", provider: "claude-cli",
+        permissionMode: session.initData.permissionMode, context: null
       });
     }
-  };
+  }
 
-  child.stdout.on("data", (chunk) => {
-    const text = chunk.toString();
-    stdout += text;
-    buffer += text;
-
-    let newlineIndex = buffer.indexOf("\n");
-    while (newlineIndex >= 0) {
-      const line = buffer.slice(0, newlineIndex).trim();
-      buffer = buffer.slice(newlineIndex + 1);
-      handleLine(line);
-      newlineIndex = buffer.indexOf("\n");
-    }
-  });
-
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk.toString();
-  });
-
-  child.on("error", (error) => {
-    finish({
-      requestId,
-      type: "error",
-      error: `Unable to execute Claude CLI: ${error.message}. Install CLI and run "claude login".`,
-      provider: "claude-cli"
-    });
-  });
-
-  child.on("close", (code) => {
-    const pendingLine = buffer.trim();
-    if (pendingLine) {
-      handleLine(pendingLine);
-    }
-
-    const latestEntry = activeStreamRequests.get(requestId) || entry;
-    if (latestEntry.aborted) {
-      finish({
-        requestId,
-        type: "aborted",
-        provider: "claude-cli"
-      });
-      return;
-    }
-
-    if (code !== 0) {
-      const detail = buildClaudeCliErrorDetail(stdout, stderr, code);
-      if (resumeSessionId && isRecoverableResumeError(detail) && typeof onSessionReset === "function") {
-        onSessionReset();
-      }
-      finish({
-        requestId,
-        type: "error",
-        error: `Claude CLI failed: ${detail}`,
-        errorSubtype: errorSubtype || "error",
-        provider: "claude-cli"
-      });
-      return;
-    }
-
-    let content = (finalText || streamedText || "").trim();
-    if (!content && isSlashCommandPrompt(prompt)) {
-      const command = prompt.trim().split(/\s+/)[0] || "/command";
-      content = command === "/compact" ? "Compacted." : `${command} executed.`;
-    }
-    if (sessionId && typeof onSessionId === "function") {
-      onSessionId(sessionId);
-    }
-    finish({
-      requestId,
-      type: "done",
-      content,
-      sessionCostUsd,
-      provider: "claude-cli"
-    });
-  });
+  session.sendMessage(message);
 }
 
 function startAnthropicPseudoStream({ webContents, requestId, messages, model, apiKey }) {
@@ -866,14 +952,9 @@ function runClaudeCli(messages, model, resumeSessionId, effort, contextFiles = [
 }
 
 function provideToolResponse(requestId, answer) {
-  const entry = activeStreamRequests.get(requestId);
-  if (!entry || !entry.stdin || entry.aborted) return false;
-  try {
-    entry.stdin.write(`${answer}\n`);
-    return true;
-  } catch {
-    return false;
-  }
+  if (!currentCliSession || currentCliSession.dead) return false;
+  if (currentCliSession.requestId !== requestId) return false;
+  return currentCliSession.provideToolResponse(answer);
 }
 
 module.exports = {

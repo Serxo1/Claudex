@@ -1,7 +1,51 @@
-const { app, BrowserWindow, ipcMain, safeStorage, dialog, globalShortcut } = require("electron");
+const { app, BrowserWindow, ipcMain, nativeImage, safeStorage, dialog, globalShortcut } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const { randomUUID } = require("node:crypto");
+
+async function createRoundedDockIcon() {
+  const logoPath = path.join(__dirname, "../public/logo.png");
+  const logoBase64 = fs.readFileSync(logoPath).toString("base64");
+  const logoDataURL = `data:image/png;base64,${logoBase64}`;
+
+  const win = new BrowserWindow({
+    width: 256,
+    height: 256,
+    show: false,
+    webPreferences: { offscreen: true, contextIsolation: true }
+  });
+
+  await new Promise((resolve) => {
+    win.loadURL("data:text/html,<html><body style='margin:0'><canvas id='c' width='256' height='256'></canvas></body></html>");
+    win.webContents.once("did-finish-load", resolve);
+  });
+
+  const dataURL = await win.webContents.executeJavaScript(`
+    new Promise(resolve => {
+      const canvas = document.getElementById('c');
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
+      img.onload = () => {
+        const size = 256, r = 56;
+        ctx.clearRect(0, 0, size, size);
+        ctx.beginPath();
+        ctx.moveTo(r, 0);
+        ctx.arcTo(size, 0, size, size, r);
+        ctx.arcTo(size, size, 0, size, r);
+        ctx.arcTo(0, size, 0, 0, r);
+        ctx.arcTo(0, 0, size, 0, r);
+        ctx.closePath();
+        ctx.clip();
+        ctx.drawImage(img, 0, 0, size, size);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.src = '${logoDataURL}';
+    })
+  `);
+
+  win.destroy();
+  return nativeImage.createFromDataURL(dataURL);
+}
 
 const { setWorkspaceDir, runCommand, isCommandAvailable } = require("./modules/utils.cjs");
 const settings = require("./modules/settings.cjs");
@@ -45,6 +89,12 @@ async function createWindow() {
 }
 
 app.whenReady().then(() => {
+  if (process.platform === "darwin" && app.dock) {
+    createRoundedDockIcon().then((icon) => app.dock.setIcon(icon)).catch(() => {
+      app.dock.setIcon(path.join(__dirname, "../public/logo.png"));
+    });
+  }
+
   createWindow();
 
   // ── Settings ──────────────────────────────────────────────────────────
