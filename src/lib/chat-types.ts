@@ -35,6 +35,7 @@ export interface ChatRequestPayload {
   messages: ChatMessage[];
   effort?: string;
   contextFiles?: ContextFileRef[];
+  resumeSessionId?: string;
 }
 
 export interface ChatSendResult {
@@ -66,6 +67,7 @@ export type ChatStreamEvent =
       content: string;
       provider: ChatProvider;
       sessionCostUsd?: number | null;
+      sessionId?: string;
     }
   | {
       requestId: string;
@@ -285,6 +287,8 @@ export type Thread = {
   title: string;
   updatedAt: number;
   messages: Array<ChatMessage & { attachments?: ContextAttachment[] }>;
+  accumulatedCostUsd?: number;
+  sessionId?: string;
 };
 
 export type ContextAttachment = ContextFileRef;

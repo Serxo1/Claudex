@@ -297,10 +297,23 @@ export function PromptArea({
         : "Claude CLI Session"
       : "Anthropic API";
 
+  const activeThread = useChatStore(
+    (s) => s.threads.find((t) => t.id === s.activeThreadId) ?? s.threads[0] ?? null
+  );
+  const accumulatedCostUsd = activeThread?.accumulatedCostUsd ?? 0;
+
   const contextMaxTokens =
     contextUsage && contextUsage.maxTokens > 0 ? contextUsage.maxTokens : 200000;
   const contextUsedTokens = contextUsage?.usedTokens ?? 0;
+  const contextPercent = contextUsage?.percent ?? 0;
   const hasContextUsage = Boolean(contextUsage);
+
+  const contextColorClass =
+    contextPercent >= 95
+      ? "text-red-500 border-red-500/40"
+      : contextPercent >= 80
+        ? "text-amber-500 border-amber-500/40"
+        : "";
 
   return (
     <div
@@ -320,7 +333,7 @@ export function PromptArea({
                   <PromptInputCommandItem
                     className={cn(
                       "flex items-start justify-between gap-3 rounded-md px-2 py-2",
-                      index === mentionSelectedIndex ? "bg-white/10" : ""
+                      index === mentionSelectedIndex ? "bg-foreground/10" : ""
                     )}
                     key={item.key}
                     onMouseEnter={() => setMentionSelectedIndex(index)}
@@ -328,10 +341,10 @@ export function PromptArea({
                     value={item.label}
                   >
                     <div className="flex min-w-0 items-start gap-2">
-                      <FileText className="mt-0.5 size-3.5 shrink-0 text-white/80" />
+                      <FileText className="mt-0.5 size-3.5 shrink-0 text-foreground/80" />
                       <div className="flex min-w-0 flex-col">
                         <span className="truncate text-sm">{item.label}</span>
-                        <span className="truncate text-[11px] text-white/60">
+                        <span className="truncate text-[11px] text-muted-foreground">
                           @ adds file to context
                         </span>
                       </div>
@@ -354,7 +367,7 @@ export function PromptArea({
                   <PromptInputCommandItem
                     className={cn(
                       "flex items-start justify-between gap-3 rounded-md px-2 py-2",
-                      index === slashSelectedIndex ? "bg-white/10" : ""
+                      index === slashSelectedIndex ? "bg-foreground/10" : ""
                     )}
                     key={command}
                     onMouseEnter={() => setSlashSelectedIndex(index)}
@@ -363,11 +376,11 @@ export function PromptArea({
                   >
                     <div className="flex min-w-0 items-start gap-2">
                       {slashCommandNeedsTerminal(command) ? (
-                        <TerminalSquare className="mt-0.5 size-3.5 shrink-0 text-white/80" />
+                        <TerminalSquare className="mt-0.5 size-3.5 shrink-0 text-foreground/80" />
                       ) : null}
                       <div className="flex min-w-0 flex-col">
                         <span className="truncate text-sm">/{command}</span>
-                        <span className="truncate text-[11px] text-white/60">
+                        <span className="truncate text-[11px] text-muted-foreground">
                           {SLASH_COMMAND_DESCRIPTIONS[command] ||
                             (command.includes(":")
                               ? "Plugin slash command."
@@ -387,7 +400,7 @@ export function PromptArea({
         <Suggestions className="mb-2">
           {suggestions.map((suggestion) => (
             <Suggestion
-              className="border-border/70 bg-white/[0.03] text-white/90 hover:bg-white/[0.08]"
+              className="border-border/70 bg-muted/30 text-foreground/90 hover:bg-foreground/[0.08]"
               key={suggestion}
               onClick={(value) => setInput(value)}
               suggestion={suggestion}
@@ -397,8 +410,22 @@ export function PromptArea({
         </Suggestions>
       ) : null}
 
+      {contextUsage && contextPercent >= 95 ? (
+        <div className="mb-2 flex items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400">
+          <TriangleAlert className="size-3.5 shrink-0" />
+          <span>
+            Contexto a {contextPercent}% — usa <strong>/compact</strong> para compactar a conversa.
+          </span>
+        </div>
+      ) : contextUsage && contextPercent >= 80 ? (
+        <div className="mb-2 flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+          <TriangleAlert className="size-3.5 shrink-0" />
+          <span>Contexto a {contextPercent}% — considera usar /compact em breve.</span>
+        </div>
+      ) : null}
+
       {latestTerminalError ? (
-        <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-border/70 bg-background px-3 py-2 text-xs text-white">
+        <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-border/70 bg-background px-3 py-2 text-xs text-foreground">
           <span className="truncate">Terminal error detected: {latestTerminalError}</span>
           <Button
             className="h-7 shrink-0 text-xs"
@@ -425,7 +452,7 @@ export function PromptArea({
       >
         <PromptInputBody>
           <PromptInputTextarea
-            className="min-h-20 text-[15px] placeholder:text-white/40"
+            className="min-h-20 text-[15px] placeholder:text-muted-foreground/50"
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={onPromptInputKeyDown}
             placeholder="Ask for follow-up changes"
@@ -480,7 +507,7 @@ export function PromptArea({
               onValueChange={(value) => void onSetModel(value)}
               value={settings?.model || "sonnet"}
             >
-              <PromptInputSelectTrigger className="h-8 min-w-56 rounded-md border border-border/60 bg-white/[0.03] px-2 py-1 text-xs">
+              <PromptInputSelectTrigger className="h-8 min-w-56 rounded-md border border-border/60 bg-muted/30 px-2 py-1 text-xs">
                 <PromptInputSelectValue />
               </PromptInputSelectTrigger>
               <PromptInputSelectContent>
@@ -501,7 +528,7 @@ export function PromptArea({
 
             {showEffortSelector ? (
               <PromptInputSelect onValueChange={setEffort} value={effort}>
-                <PromptInputSelectTrigger className="h-8 min-w-32 rounded-md border border-border/60 bg-white/[0.03] px-2 py-1 text-xs">
+                <PromptInputSelectTrigger className="h-8 min-w-32 rounded-md border border-border/60 bg-muted/30 px-2 py-1 text-xs">
                   <PromptInputSelectValue />
                 </PromptInputSelectTrigger>
                 <PromptInputSelectContent>
@@ -514,7 +541,7 @@ export function PromptArea({
           </PromptInputTools>
 
           <PromptInputSubmit
-            className="rounded-full bg-white text-black hover:bg-white/90"
+            className="rounded-full bg-foreground text-background hover:bg-foreground/90"
             disabled={isSending ? false : !canSend || isBusy || isGitBusy}
             onStop={() => void onAbortStream()}
             status={isSending ? "streaming" : "ready"}
@@ -525,64 +552,83 @@ export function PromptArea({
       <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
         <div className="flex items-center gap-2">
           <Context maxTokens={contextMaxTokens} usedTokens={contextUsedTokens}>
-            <ContextTrigger className="h-8 rounded-full border border-border/70 bg-white/[0.03] px-2 py-1 text-xs hover:bg-white/[0.08]" />
+            <ContextTrigger
+              className={cn(
+                "h-8 rounded-full border bg-muted/30 px-2 py-1 text-xs hover:bg-foreground/[0.08]",
+                contextColorClass || "border-border/70"
+              )}
+            />
             <ContextContent className="w-64 rounded-xl border-border/70 bg-background">
               <ContextContentHeader />
-              <ContextContentBody className="space-y-1 text-xs">
-                <div className="flex items-center justify-between text-white/80">
-                  <span>Model</span>
-                  <span className="truncate pl-2">{settings?.model || "--"}</span>
+              <ContextContentBody className="space-y-1.5 text-xs">
+                <div className="flex items-center justify-between text-foreground/80">
+                  <span>Modelo</span>
+                  <span className="truncate pl-2 font-mono text-[11px]">
+                    {settings?.model || "--"}
+                  </span>
                 </div>
-                <div className="flex items-center justify-between text-white/80">
-                  <span>Compact at</span>
-                  <span>{contextMaxTokens.toLocaleString()}</span>
-                </div>
-                <div className="flex items-center justify-between text-white/80">
-                  <span>Used</span>
-                  <span>
+                <div className="flex items-center justify-between text-foreground/70">
+                  <span>Usado</span>
+                  <span className="font-mono">
                     {hasContextUsage && contextUsage
                       ? contextUsage.usedTokens.toLocaleString()
                       : "--"}
                   </span>
                 </div>
-                <div className="flex items-center justify-between text-white/80">
-                  <span>Max</span>
-                  <span>
-                    {hasContextUsage && contextUsage
-                      ? contextUsage.maxTokens.toLocaleString()
-                      : "--"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-white/80">
-                  <span>Input</span>
-                  <span>
+                <div className="flex items-center justify-between text-foreground/70">
+                  <span className="pl-3 text-[11px]">↳ input</span>
+                  <span className="font-mono text-[11px] text-muted-foreground">
                     {hasContextUsage && contextUsage
                       ? contextUsage.inputTokens.toLocaleString()
                       : "--"}
                   </span>
                 </div>
-                <div className="flex items-center justify-between text-white/80">
-                  <span>Output</span>
-                  <span>
+                <div className="flex items-center justify-between text-foreground/70">
+                  <span className="pl-3 text-[11px]">↳ output</span>
+                  <span className="font-mono text-[11px] text-muted-foreground">
                     {hasContextUsage && contextUsage
                       ? contextUsage.outputTokens.toLocaleString()
                       : "--"}
                   </span>
                 </div>
+                <div className="flex items-center justify-between text-foreground/70">
+                  <span className="pl-3 text-[11px]">↳ cache</span>
+                  <span className="font-mono text-[11px] text-muted-foreground">
+                    {hasContextUsage && contextUsage
+                      ? contextUsage.cacheReadInputTokens.toLocaleString()
+                      : "--"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-foreground/80">
+                  <span>Máximo</span>
+                  <span className="font-mono">
+                    {hasContextUsage && contextUsage
+                      ? contextUsage.maxTokens.toLocaleString()
+                      : contextMaxTokens.toLocaleString()}
+                  </span>
+                </div>
+                {accumulatedCostUsd > 0 ? (
+                  <div className="mt-1 flex items-center justify-between border-t border-border/40 pt-1.5 text-foreground/80">
+                    <span>Custo acumulado</span>
+                    <span className="font-mono text-emerald-600 dark:text-emerald-400">
+                      ${accumulatedCostUsd.toFixed(4)}
+                    </span>
+                  </div>
+                ) : null}
               </ContextContentBody>
             </ContextContent>
           </Context>
-          <span className="rounded-full border border-border/70 bg-white/[0.03] px-2 py-1 text-white">
+          <span className="rounded-full border border-border/70 bg-muted/30 px-2 py-1 text-foreground">
             {formatPermissionMode(permissionMode)}
           </span>
-          <span className="rounded-full border border-border/70 bg-white/[0.03] px-2 py-1">
+          <span className="rounded-full border border-border/70 bg-muted/30 px-2 py-1">
             {providerLabel}
           </span>
           {limitsWarning ? (
             <span
               className={cn(
                 "inline-flex items-center gap-1 rounded-full border px-2 py-1",
-                "border-border/70 bg-white/[0.03] text-white"
+                "border-border/70 bg-muted/30 text-foreground"
               )}
               title={limitsWarning.message}
             >

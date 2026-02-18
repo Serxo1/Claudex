@@ -74,6 +74,11 @@ function safeLoadThreads(): Thread[] {
             ? (thread.title as string)
             : "New thread",
         updatedAt: typeof thread.updatedAt === "number" ? (thread.updatedAt as number) : Date.now(),
+        accumulatedCostUsd:
+          typeof thread.accumulatedCostUsd === "number"
+            ? (thread.accumulatedCostUsd as number)
+            : undefined,
+        sessionId: typeof thread.sessionId === "string" ? (thread.sessionId as string) : undefined,
         messages: (thread.messages as Array<ChatMessage & { attachments?: ContextAttachment[] }>)
           .filter(
             (message: ChatMessage & { attachments?: ContextAttachment[] }) =>
@@ -451,11 +456,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 ? { ...message, content: event.content }
                 : message
             );
+            const prevCost = thread.accumulatedCostUsd ?? 0;
+            const addCost = event.sessionCostUsd ?? 0;
             return {
               ...thread,
               messages: nextMessages,
               updatedAt: Date.now(),
-              title: deriveThreadTitle(nextMessages, thread.title)
+              title: deriveThreadTitle(nextMessages, thread.title),
+              accumulatedCostUsd: prevCost + addCost,
+              sessionId: event.sessionId ?? thread.sessionId
             };
           });
           return {
@@ -680,7 +689,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const started = await window.desktop.chat.startStream({
         messages: messagesForSend,
         effort: isOpusModel(settings.model) && effort ? effort : undefined,
-        contextFiles: contextForSend
+        contextFiles: contextForSend,
+        resumeSessionId: activeThread.sessionId ?? ""
       });
       set({
         _activeStreamRef: {

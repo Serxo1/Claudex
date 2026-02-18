@@ -282,7 +282,9 @@ async function startSDKStream({
 
         sendStreamEvent(webContents, {
           requestId, type: "done",
-          content, sessionCostUsd, provider: "claude-cli"
+          content, sessionCostUsd,
+          sessionId: sessionId || undefined,
+          provider: "claude-cli"
         });
       }
     }
@@ -548,12 +550,13 @@ function runClaudeCli(messages, model, resumeSessionId, effort, contextFiles = [
 // ---------------------------------------------------------------------------
 
 function parseChatPayload(payload) {
-  if (Array.isArray(payload)) return { messages: payload, effort: "", contextFiles: [] };
-  if (!payload || typeof payload !== "object") return { messages: [], effort: "", contextFiles: [] };
+  if (Array.isArray(payload)) return { messages: payload, effort: "", contextFiles: [], resumeSessionId: "" };
+  if (!payload || typeof payload !== "object") return { messages: [], effort: "", contextFiles: [], resumeSessionId: "" };
   return {
     messages: Array.isArray(payload.messages) ? payload.messages : [],
     effort: typeof payload.effort === "string" ? payload.effort.trim() : "",
-    contextFiles: normalizeContextFiles(payload.contextFiles)
+    contextFiles: normalizeContextFiles(payload.contextFiles),
+    resumeSessionId: typeof payload.resumeSessionId === "string" ? payload.resumeSessionId.trim() : ""
   };
 }
 

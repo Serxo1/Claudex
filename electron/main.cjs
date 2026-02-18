@@ -658,7 +658,7 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle("chat:streamStart", async (event, payload) => {
-    const { messages, effort, contextFiles } = chat.parseChatPayload(payload);
+    const { messages, effort, contextFiles, resumeSessionId: clientResumeSessionId } = chat.parseChatPayload(payload);
     if (!Array.isArray(messages) || messages.length === 0) {
       throw new Error("Cannot send an empty chat.");
     }
@@ -684,7 +684,8 @@ app.whenReady().then(() => {
     }
 
     const hasImageContext = contextFiles.some((file) => file.isImage);
-    const resumeSessionId = hasImageContext ? "" : current.claudeCliSessionId;
+    // Prefer per-thread sessionId from renderer; fallback to global settings session
+    const resumeSessionId = hasImageContext ? "" : (clientResumeSessionId || current.claudeCliSessionId);
     const forcedSessionId = hasImageContext ? randomUUID() : "";
 
     void chat.startSDKStream({
