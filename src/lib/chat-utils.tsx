@@ -57,7 +57,34 @@ export function summarizeForUi(value: unknown, fallback: string): string {
   }
 }
 
+const TOOL_INPUT_KEY_PRIORITY = [
+  "command", // Bash
+  "file_path", // Read, Write, Edit
+  "pattern", // Glob, Grep
+  "description", // Task
+  "prompt", // generic
+  "query", // generic
+  "path" // generic
+];
+
 export function summarizeToolInput(input: Record<string, unknown> | null): string {
+  if (!input) return "No input payload.";
+
+  // Try priority keys first — extract just the meaningful value
+  for (const key of TOOL_INPUT_KEY_PRIORITY) {
+    const val = input[key];
+    if (typeof val === "string" && val.trim()) {
+      return summarizeForUi(val.trim(), "No input payload.");
+    }
+  }
+
+  // Fallback: find first non-empty string value in the object
+  for (const val of Object.values(input)) {
+    if (typeof val === "string" && val.trim()) {
+      return summarizeForUi(val.trim(), "No input payload.");
+    }
+  }
+
   return summarizeForUi(input, "No input payload.");
 }
 

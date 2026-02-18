@@ -410,6 +410,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     finishedAt: event.timestamp
                   }
                 ];
+          const toolName =
+            currentItems.find((item) => item.toolUseId === event.toolUseId)?.name ?? "tool";
           return {
             activeToolTimelineByRequest: {
               ...state.activeToolTimelineByRequest,
@@ -417,9 +419,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             },
             reasoningText: appendReasoningLine(
               state.reasoningText,
-              event.isError
-                ? `Tool ${event.toolUseId} completed with error.`
-                : `Tool ${event.toolUseId} completed.`
+              event.isError ? `${toolName} failed.` : `${toolName} done.`
             )
           };
         });
