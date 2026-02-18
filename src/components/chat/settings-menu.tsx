@@ -1,141 +1,109 @@
-import type { ComponentProps, ReactNode } from "react";
-import { Bot, Bug, UserRound } from "lucide-react";
+import { useState } from "react";
+import { Bug, CheckCircle2, Puzzle, UserRound, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuTrigger
-} from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
+import { cn } from "@/lib/utils";
+import { SetupGuide } from "@/components/chat/setup-guide";
+import { McpPanel } from "@/components/chat/mcp-panel";
 
-export type SettingsMenuProps = {
-  align: ComponentProps<typeof DropdownMenuContent>["align"];
-  children: ReactNode;
-};
-
-export function SettingsMenu({ align, children }: SettingsMenuProps) {
-  const settings = useSettingsStore((s) => s.settings);
-  const status = useSettingsStore((s) => s.status);
-  const busy = useSettingsStore((s) => s.isBusy);
-  const apiKeyDraft = useSettingsStore((s) => s.apiKeyDraft);
-  const setApiKeyDraft = useSettingsStore((s) => s.setApiKeyDraft);
-  const onAuthModeChange = useSettingsStore((s) => s.onAuthModeChange);
-  const onSaveApiKey = useSettingsStore((s) => s.onSaveApiKey);
-  const onClearApiKey = useSettingsStore((s) => s.onClearApiKey);
+/** Rendered inline inside the sidebar — no dropdown wrapper */
+export function SettingsContent() {
+  const claudeCodeReady = useSettingsStore((s) => s.claudeCodeReady);
+  const accountInfo = useSettingsStore((s) => s.accountInfo);
   const onClearCliSession = useSettingsStore((s) => s.onClearCliSession);
-  const onTestCli = useSettingsStore((s) => s.onTestCli);
+  const settings = useSettingsStore((s) => s.settings);
   const workspaceName = useWorkspaceStore((s) => s.workspace?.name || "Local workspace");
-
-  const accountLabel =
-    settings?.authMode === "claude-cli"
-      ? "Claude CLI account"
-      : settings?.hasApiKey
-        ? "Anthropic API key configured"
-        : "No API key configured";
+  const [showSetupGuide, setShowSetupGuide] = useState(false);
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
-      <DropdownMenuContent
-        align={align}
-        className="w-[320px] rounded-2xl border border-border/70 bg-background p-2 text-foreground shadow-2xl backdrop-blur-xl"
-        sideOffset={8}
-      >
-        <div className="px-2.5 pt-1.5 pb-1">
-          <div className="flex items-center gap-2">
-            <UserRound className="size-4 text-muted-foreground" />
-            <span className="truncate text-sm font-semibold">{workspaceName}</span>
+    <>
+      <div className="flex flex-col gap-3 p-3">
+        {/* Account */}
+        <div className="flex items-center gap-2 px-0.5">
+          <UserRound className="size-4 shrink-0 text-muted-foreground" />
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold leading-tight">{workspaceName}</p>
+            {accountInfo?.email ? (
+              <p className="truncate text-xs text-muted-foreground">{accountInfo.email}</p>
+            ) : null}
           </div>
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">{accountLabel}</p>
         </div>
 
-        <div className="mt-1 space-y-2 rounded-xl border border-border/70 bg-background p-2.5">
-          <DropdownMenuLabel className="px-0 pb-0.5 text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
-            Connection
-          </DropdownMenuLabel>
-
-          <div className="grid grid-cols-2 gap-1">
-            <Button
-              className="h-7 text-xs"
-              onClick={() => void onAuthModeChange("claude-cli")}
-              type="button"
-              variant={settings?.authMode === "claude-cli" ? "secondary" : "outline"}
+        {/* Claude Code status */}
+        <div className="rounded-xl border border-border/60 bg-muted/10 p-2.5 space-y-2">
+          <p className="text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
+            Claude Code
+          </p>
+          <div className="flex items-center gap-2">
+            {claudeCodeReady === null ? (
+              <span className="size-2 rounded-full bg-muted-foreground/40" />
+            ) : claudeCodeReady ? (
+              <CheckCircle2 className="size-4 shrink-0 text-emerald-500" />
+            ) : (
+              <XCircle className="size-4 shrink-0 text-destructive" />
+            )}
+            <span
+              className={cn(
+                "flex-1 text-sm",
+                claudeCodeReady === true
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : claudeCodeReady === false
+                    ? "text-destructive"
+                    : "text-muted-foreground"
+              )}
             >
-              CLI session
-            </Button>
-            <Button
-              className="h-7 text-xs"
-              onClick={() => void onAuthModeChange("api-key")}
-              type="button"
-              variant={settings?.authMode === "api-key" ? "secondary" : "outline"}
-            >
-              API key
-            </Button>
-          </div>
-
-          {settings?.authMode === "api-key" ? (
-            <div className="space-y-2">
-              <Input
-                className="h-7 text-xs"
-                onChange={(event) => setApiKeyDraft(event.target.value)}
-                placeholder={settings.hasApiKey ? "Saved key detected" : "sk-ant-..."}
-                type="password"
-                value={apiKeyDraft}
-              />
-              <div className="flex gap-1.5">
-                <Button
-                  className="h-7 px-2.5 text-xs"
-                  disabled={busy || !apiKeyDraft.trim()}
-                  onClick={() => void onSaveApiKey()}
-                  type="button"
-                >
-                  Save key
-                </Button>
-                <Button
-                  className="h-7 px-2.5 text-xs"
-                  disabled={busy || !settings.hasApiKey}
-                  onClick={() => void onClearApiKey()}
-                  type="button"
-                  variant="outline"
-                >
-                  Clear
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-2">
+              {claudeCodeReady === null
+                ? "A verificar..."
+                : claudeCodeReady
+                  ? "Ready"
+                  : "Not configured"}
+            </span>
+            {!claudeCodeReady && claudeCodeReady !== null ? (
               <Button
-                className="h-7 text-xs"
-                onClick={() => void onTestCli()}
+                className="h-6 text-xs"
+                onClick={() => setShowSetupGuide(true)}
+                size="sm"
                 type="button"
                 variant="outline"
               >
-                <Bot className="size-3.5" />
-                Test Claude CLI
+                Setup guide
               </Button>
-              {settings?.hasClaudeCliSession ? (
-                <Button
-                  className="h-7 text-xs"
-                  onClick={() => void onClearCliSession()}
-                  type="button"
-                  variant="outline"
-                >
-                  Start new CLI session
-                </Button>
-              ) : null}
-            </div>
-          )}
-
-          <p className="text-[10px] text-muted-foreground">{status}</p>
+            ) : null}
+          </div>
+          {accountInfo?.subscriptionType ? (
+            <p className="text-[11px] text-muted-foreground">
+              Plano: {accountInfo.subscriptionType}
+            </p>
+          ) : null}
+          {settings?.hasClaudeCliSession ? (
+            <Button
+              className="h-7 w-full text-xs"
+              onClick={() => void onClearCliSession()}
+              type="button"
+              variant="outline"
+            >
+              Nova sessão CLI
+            </Button>
+          ) : null}
         </div>
 
-        <div className="mt-2 space-y-2 rounded-xl border border-border/70 bg-background p-2.5">
-          <DropdownMenuLabel className="px-0 pb-0.5 text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+        {/* Plugins */}
+        <div className="rounded-xl border border-border/60 bg-muted/10">
+          <div className="flex items-center gap-1.5 px-2.5 pt-2.5 pb-1">
+            <Puzzle className="size-3 text-muted-foreground" />
+            <p className="text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
+              Plugins
+            </p>
+          </div>
+          <McpPanel />
+        </div>
+
+        {/* Debug */}
+        <div className="rounded-xl border border-border/60 bg-muted/10 p-2.5 space-y-2">
+          <p className="text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
             Debug
-          </DropdownMenuLabel>
+          </p>
           <Button
             className="h-7 w-full text-xs"
             onClick={() => void window.desktop.debug.openDevTools()}
@@ -146,7 +114,9 @@ export function SettingsMenu({ align, children }: SettingsMenuProps) {
             Open DevTools
           </Button>
         </div>
-      </DropdownMenuContent>
-    </DropdownMenu>
+      </div>
+
+      <SetupGuide open={showSetupGuide} onOpenChange={setShowSetupGuide} />
+    </>
   );
 }

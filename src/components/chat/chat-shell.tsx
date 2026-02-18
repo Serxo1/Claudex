@@ -1,13 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  ChevronLeft,
-  ChevronRight,
-  ExternalLink,
-  RefreshCcw,
-  Save,
-  Settings,
-  X
-} from "lucide-react";
+import { ChevronLeft, ChevronRight, ExternalLink, RefreshCcw, Save, X } from "lucide-react";
 import {
   WebPreview,
   WebPreviewBody,
@@ -30,18 +22,22 @@ import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useGitStore } from "@/stores/git-store";
 import { useChatStore } from "@/stores/chat-store";
 
-import { SettingsMenu } from "@/components/chat/settings-menu";
+import { SettingsContent } from "@/components/chat/settings-menu";
 import { Sidebar } from "@/components/chat/sidebar";
 import { HeaderBar } from "@/components/chat/header-bar";
 import { SessionStack } from "@/components/chat/session-stack";
+import { NewModelAnnouncement } from "@/components/chat/new-model-announcement";
 
 export function ChatShell() {
   const [activePage, setActivePage] = useState<"chat" | "preview" | "skills">("chat");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
 
   const setStatus = useSettingsStore((s) => s.setStatus);
   const settings = useSettingsStore((s) => s.settings);
   const refreshSettings = useSettingsStore((s) => s.refreshSettings);
+  const onTestCli = useSettingsStore((s) => s.onTestCli);
+  const dynamicModels = useSettingsStore((s) => s.dynamicModels);
 
   const editorTabs = useWorkspaceStore((s) => s.editorTabs);
   const activeEditorTabId = useWorkspaceStore((s) => s.activeEditorTabId);
@@ -111,7 +107,8 @@ export function ChatShell() {
           refreshGitSummary(),
           refreshIdeInfo(),
           refreshWorkspaceFileTree(),
-          refreshRecentCommits()
+          refreshRecentCommits(),
+          onTestCli()
         ]);
         setStatus("Ready.");
       } catch (error) {
@@ -126,6 +123,21 @@ export function ChatShell() {
       void Promise.all([refreshGitSummary(), refreshRecentCommits(), refreshWorkspaceFileTree()]);
     }, 10000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const onGlobalKeyDown = (event: KeyboardEvent) => {
+      const isMod = event.metaKey || event.ctrlKey;
+      // Cmd+K — open inline search in sidebar
+      if (isMod && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setIsSidebarOpen(true);
+        setIsSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onGlobalKeyDown);
+    return () => window.removeEventListener("keydown", onGlobalKeyDown);
   }, []);
 
   // Editor keyboard shortcut (Cmd+S)
@@ -157,18 +169,28 @@ export function ChatShell() {
   ]);
 
   const modelOptions = useMemo(() => {
+    if (dynamicModels.length > 0) {
+      const options = dynamicModels.map((m) => ({ value: m.value, label: m.displayName }));
+      // If the current model isn't in the dynamic list, add it so the selector stays consistent
+      if (settings?.model && !options.some((o) => o.value === settings.model)) {
+        options.unshift({ value: settings.model, label: settings.model });
+      }
+      return options;
+    }
+    // Fallback to static options before first session
     const options = [...MODEL_OPTIONS];
     if (settings?.model && !options.some((option) => option.value === settings.model)) {
       options.unshift({ value: settings.model, label: settings.model });
     }
     return options;
-  }, [settings?.model]);
+  }, [dynamicModels, settings?.model]);
 
   const showRightPanel = activePage === "preview" || editorTabs.length > 0;
   const chatContainerMax = showRightPanel ? "max-w-none" : "max-w-4xl";
 
   return (
     <main className="relative flex h-screen w-screen overflow-hidden text-foreground">
+      <NewModelAnnouncement />
       {isSidebarOpen ? (
         <button
           className="absolute inset-0 z-30 bg-black/45 lg:hidden"
@@ -180,19 +202,11 @@ export function ChatShell() {
       <Sidebar
         activePage={activePage}
         isOpen={isSidebarOpen}
+        searchOpen={isSearchOpen}
+        onSearchClose={() => setIsSearchOpen(false)}
         onSelectPage={setActivePage}
         onToggle={() => setIsSidebarOpen(false)}
-        settingsMenu={
-          <SettingsMenu align="start">
-            <button
-              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition hover:bg-foreground/5 hover:text-foreground"
-              type="button"
-            >
-              <Settings className="size-4" />
-              <span>Settings</span>
-            </button>
-          </SettingsMenu>
-        }
+        settingsContent={<SettingsContent />}
       />
 
       <section className="flex min-w-0 flex-1 flex-col bg-background">

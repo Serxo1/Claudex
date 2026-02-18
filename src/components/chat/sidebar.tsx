@@ -1,13 +1,18 @@
-import { type ReactNode } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import logo from "@/assets/logo.png";
 import {
+  ChevronRight,
   FolderOpen,
   FolderPlus,
   Globe,
-  ListFilter,
+  MessageSquare,
   PanelLeftClose,
+  Plus,
+  Search,
+  Settings,
   Trash2,
-  Workflow
+  Workflow,
+  X
 } from "lucide-react";
 import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
 import { Button } from "@/components/ui/button";
@@ -20,7 +25,11 @@ export type SidebarProps = {
   onToggle: () => void;
   activePage: "chat" | "preview" | "skills";
   onSelectPage: (page: "chat" | "preview" | "skills") => void;
-  settingsMenu: ReactNode;
+  /** Controlled from outside (Cmd+K) — when true, expands inline search */
+  searchOpen?: boolean;
+  onSearchClose?: () => void;
+  /** Content rendered inside the inline collapsible settings panel */
+  settingsContent?: ReactNode;
 };
 
 function timeAgo(timestamp: number): string {
@@ -56,7 +65,9 @@ export function Sidebar({
   onToggle,
   activePage,
   onSelectPage,
-  settingsMenu
+  searchOpen,
+  onSearchClose,
+  settingsContent
 }: SidebarProps) {
   const threads = useChatStore((s) => s.threads);
   const activeThreadId = useChatStore((s) => s.activeThreadId);
@@ -64,14 +75,71 @@ export function Sidebar({
   const createThread = useChatStore((s) => s.createThread);
   const deleteThread = useChatStore((s) => s.deleteThread);
 
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
   const setActiveSessionId = useChatStore((s) => s.setActiveSessionId);
+  const renameSession = useChatStore((s) => s.renameSession);
+
+  const [editingSession, setEditingSession] = useState<{
+    threadId: string;
+    sessionId: string;
+    value: string;
+  } | null>(null);
+  const editInputRef = useRef<HTMLInputElement>(null);
+
+  const [collapsedThreads, setCollapsedThreads] = useState<Set<string>>(new Set());
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Open inline search when parent triggers (Cmd+K)
+  useEffect(() => {
+    if (searchOpen) {
+      setIsSearching(true);
+      setTimeout(() => searchInputRef.current?.focus(), 50);
+    }
+  }, [searchOpen]);
+
+  const openSearch = () => {
+    setIsSearching(true);
+    setTimeout(() => searchInputRef.current?.focus(), 50);
+  };
+
+  const closeSearch = () => {
+    setIsSearching(false);
+    setSearchQuery("");
+    onSearchClose?.();
+  };
+
+  const toggleCollapse = (threadId: string) => {
+    setCollapsedThreads((prev) => {
+      const next = new Set(prev);
+      if (next.has(threadId)) next.delete(threadId);
+      else next.add(threadId);
+      return next;
+    });
+  };
 
   const sortedThreads = [...threads].sort((a, b) => b.updatedAt - a.updatedAt);
+
+  // Filtered threads for inline search
+  const q = searchQuery.trim().toLowerCase();
+  const searchResults = q
+    ? sortedThreads.filter(
+        (t) =>
+          t.title.toLowerCase().includes(q) ||
+          t.sessions.some(
+            (s) =>
+              s.title.toLowerCase().includes(q) ||
+              s.messages.some((m) => m.content.toLowerCase().includes(q))
+          )
+      )
+    : sortedThreads;
 
   if (!isOpen) return null;
 
   return (
-    <aside className="absolute inset-y-0 left-0 z-40 flex h-full w-[280px] shrink-0 flex-col border-r border-border/70 bg-background/80 backdrop-blur-xl backdrop-saturate-150 lg:static lg:z-auto">
+    <aside className="absolute inset-y-0 left-0 z-40 flex h-full w-[280px] shrink-0 flex-col border-r border-border/70 bg-white dark:bg-background/50 lg:static lg:z-auto">
       {/* App header — pt-8 to clear macOS traffic lights (hiddenInset titleBar) */}
       <div className="[-webkit-app-region:drag] flex items-center justify-between px-4 pt-8 pb-3">
         <div className="flex items-center gap-2 [-webkit-app-region:no-drag]">
@@ -135,53 +203,109 @@ export function Sidebar({
       {/* Threads section */}
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex items-center justify-between px-4 pb-2">
-          <span className="text-xs font-medium text-muted-foreground/70 uppercase tracking-[0.08em]">
-            Threads
-          </span>
-          <div className="flex items-center gap-0.5">
-            <Button
-              className="size-6 text-muted-foreground hover:text-foreground"
-              onClick={createThread}
-              size="icon-xs"
-              title="Novo projecto"
-              type="button"
-              variant="ghost"
-            >
-              <FolderPlus className="size-3.5" />
-            </Button>
-            <Button
-              className="size-6 text-muted-foreground hover:text-foreground"
-              size="icon-xs"
-              title="Filtrar"
-              type="button"
-              variant="ghost"
-            >
-              <ListFilter className="size-3.5" />
-            </Button>
-          </div>
+          {isSearching ? (
+            /* Inline search bar */
+            <div className="flex flex-1 items-center gap-1.5">
+              <Search className="size-3.5 shrink-0 text-muted-foreground" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") closeSearch();
+                }}
+                placeholder="Pesquisar..."
+                className="min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/60"
+              />
+              <button
+                className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 transition hover:text-muted-foreground"
+                onClick={closeSearch}
+                type="button"
+              >
+                <X className="size-3" />
+              </button>
+            </div>
+          ) : (
+            /* Normal header */
+            <>
+              <span className="text-xs font-medium text-muted-foreground/70 uppercase tracking-[0.08em]">
+                Threads
+              </span>
+              <div className="flex items-center gap-0.5">
+                <Button
+                  className="size-6 text-muted-foreground hover:text-foreground"
+                  onClick={openSearch}
+                  size="icon-xs"
+                  title="Pesquisar threads (⌘K)"
+                  type="button"
+                  variant="ghost"
+                >
+                  <Search className="size-3.5" />
+                </Button>
+                <Button
+                  className="size-6 text-muted-foreground hover:text-foreground"
+                  onClick={createThread}
+                  size="icon-xs"
+                  title="Novo projecto"
+                  type="button"
+                  variant="ghost"
+                >
+                  <FolderPlus className="size-3.5" />
+                </Button>
+              </div>
+            </>
+          )}
         </div>
 
         <div className="min-h-0 flex-1 overflow-auto px-2 pb-2">
-          {sortedThreads.length === 0 ? (
+          {searchResults.length === 0 ? (
             <p className="px-3 py-6 text-center text-xs text-muted-foreground">
-              Sem projectos. Clica em <FolderPlus className="inline size-3" /> para criar um.
+              {q ? (
+                "Nenhum resultado encontrado"
+              ) : (
+                <>
+                  Sem projectos. Clica em <FolderPlus className="inline size-3" /> para criar um.
+                </>
+              )}
             </p>
           ) : (
-            sortedThreads.map((thread) => {
+            searchResults.map((thread) => {
               const isActive = thread.id === activeThreadId;
+              const hasSessions = thread.sessions.length > 0;
+              const isCollapsed = collapsedThreads.has(thread.id);
+              const isNewSessionActive = isActive && !hasSessions;
 
               return (
                 <div key={thread.id} className="mb-0.5">
-                  {/* Project row */}
-                  <div className="group flex items-center gap-1">
+                  {/* Thread row */}
+                  <div className="group flex items-center gap-0.5">
+                    {/* Chevron toggle */}
+                    <button
+                      className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/40 transition hover:text-muted-foreground"
+                      onClick={() => toggleCollapse(thread.id)}
+                      title={isCollapsed ? "Expandir" : "Colapsar"}
+                      type="button"
+                    >
+                      <ChevronRight
+                        className={cn(
+                          "size-3 transition-transform duration-150",
+                          !isCollapsed && "rotate-90"
+                        )}
+                      />
+                    </button>
+
                     <button
                       className={cn(
-                        "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left transition",
+                        "flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left transition",
                         isActive
                           ? "text-foreground"
                           : "text-foreground/80 hover:text-foreground hover:bg-foreground/5"
                       )}
-                      onClick={() => setActiveThreadId(thread.id)}
+                      onClick={() => {
+                        setActiveThreadId(thread.id);
+                        if (isSearching) closeSearch();
+                      }}
                       type="button"
                     >
                       <FolderOpen className="size-3.5 shrink-0 text-muted-foreground/60" />
@@ -192,11 +316,12 @@ export function Sidebar({
                           thread.title
                         )}
                       </span>
-                      {thread.sessions.length === 0 && (
+                      {isNewSessionActive && (
                         <span className="shrink-0 text-[10px] text-muted-foreground/50">New</span>
                       )}
                       {threadStatusDot(thread.status)}
                     </button>
+
                     <button
                       className="invisible size-6 shrink-0 inline-flex items-center justify-center rounded text-muted-foreground/50 transition hover:bg-destructive/10 hover:text-destructive group-hover:visible"
                       onClick={() => deleteThread(thread.id)}
@@ -208,32 +333,98 @@ export function Sidebar({
                   </div>
 
                   {/* Session list */}
-                  {thread.sessions.length > 0 && (
-                    <div className="ml-3.5 border-l border-border/40 pl-2.5 mt-0.5 mb-1 space-y-0.5">
+                  {!isCollapsed && (
+                    <div className="ml-5 border-l border-border/40 pl-2 mt-0.5 mb-1 space-y-0.5">
+                      {/* Nova sessão — sempre primeiro */}
+                      <button
+                        className={cn(
+                          "flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition",
+                          isActive && !activeSessionId
+                            ? "bg-foreground/8 text-foreground font-medium"
+                            : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
+                        )}
+                        onClick={() => {
+                          setActiveThreadId(thread.id);
+                          setActiveSessionId("");
+                        }}
+                        type="button"
+                      >
+                        <Plus className="size-3 shrink-0 opacity-60" />
+                        <span className="flex-1 truncate leading-snug">Nova sessão</span>
+                      </button>
+
                       {[...thread.sessions]
                         .sort((a, b) => b.updatedAt - a.updatedAt)
-                        .map((session) => (
-                          <button
-                            key={session.id}
-                            className={cn(
-                              "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition",
-                              isActive
-                                ? "text-foreground/90 hover:bg-foreground/5"
-                                : "text-muted-foreground hover:text-foreground hover:bg-foreground/5",
-                              sessionStatusClass(session.status)
-                            )}
-                            onClick={() => {
-                              setActiveThreadId(thread.id);
-                              setActiveSessionId(session.id);
-                            }}
-                            type="button"
-                          >
-                            <span className="flex-1 truncate leading-snug">{session.title}</span>
-                            <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/50">
-                              {timeAgo(session.updatedAt)}
-                            </span>
-                          </button>
-                        ))}
+                        .map((session) => {
+                          const isEditing =
+                            editingSession?.threadId === thread.id &&
+                            editingSession?.sessionId === session.id;
+
+                          const commitEdit = () => {
+                            if (!editingSession) return;
+                            renameSession(thread.id, session.id, editingSession.value);
+                            setEditingSession(null);
+                          };
+
+                          if (isEditing) {
+                            return (
+                              <div
+                                key={session.id}
+                                className="flex items-center gap-1.5 rounded-md px-2 py-1"
+                              >
+                                <MessageSquare className="size-3 shrink-0 opacity-50 text-muted-foreground" />
+                                <input
+                                  ref={editInputRef}
+                                  className="flex-1 min-w-0 bg-transparent text-xs text-foreground outline-none border-b border-primary/60 leading-snug"
+                                  value={editingSession.value}
+                                  onChange={(e) =>
+                                    setEditingSession((prev) =>
+                                      prev ? { ...prev, value: e.target.value } : null
+                                    )
+                                  }
+                                  onBlur={commitEdit}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") commitEdit();
+                                    if (e.key === "Escape") setEditingSession(null);
+                                  }}
+                                />
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <button
+                              key={session.id}
+                              className={cn(
+                                "flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition",
+                                isActive
+                                  ? "text-foreground/90 hover:bg-foreground/5"
+                                  : "text-muted-foreground hover:text-foreground hover:bg-foreground/5",
+                                sessionStatusClass(session.status)
+                              )}
+                              onClick={() => {
+                                setActiveThreadId(thread.id);
+                                setActiveSessionId(session.id);
+                              }}
+                              onDoubleClick={(e) => {
+                                e.stopPropagation();
+                                setEditingSession({
+                                  threadId: thread.id,
+                                  sessionId: session.id,
+                                  value: session.title
+                                });
+                                setTimeout(() => editInputRef.current?.select(), 0);
+                              }}
+                              type="button"
+                            >
+                              <MessageSquare className="size-3 shrink-0 opacity-50" />
+                              <span className="flex-1 truncate leading-snug">{session.title}</span>
+                              <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/50">
+                                {timeAgo(session.updatedAt)}
+                              </span>
+                            </button>
+                          );
+                        })}
                     </div>
                   )}
                 </div>
@@ -243,9 +434,31 @@ export function Sidebar({
         </div>
       </div>
 
+      {/* Settings collapsible panel */}
+      <div
+        className={cn(
+          "overflow-hidden transition-[max-height] duration-200 ease-in-out border-t border-border/60 bg-white dark:bg-background",
+          isSettingsOpen ? "max-h-[600px]" : "max-h-0 border-t-0"
+        )}
+      >
+        {settingsContent}
+      </div>
+
       {/* Footer */}
       <div className="flex items-center gap-1 border-t border-border/60 px-3 py-3">
-        <div className="flex-1">{settingsMenu}</div>
+        <button
+          className={cn(
+            "flex flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition",
+            isSettingsOpen
+              ? "bg-foreground/8 text-foreground"
+              : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+          )}
+          onClick={() => setIsSettingsOpen((v) => !v)}
+          type="button"
+        >
+          <Settings className="size-4 shrink-0" />
+          <span>Settings</span>
+        </button>
         <AnimatedThemeToggler className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent hover:text-foreground [&>svg]:size-4" />
       </div>
     </aside>

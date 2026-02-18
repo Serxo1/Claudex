@@ -1,9 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { CheckIcon, XIcon, ShieldIcon, MessageSquareIcon, InfinityIcon } from "lucide-react";
+import {
+  CheckIcon,
+  XIcon,
+  ShieldIcon,
+  MessageSquareIcon,
+  InfinityIcon,
+  ChevronDown,
+  ChevronUp
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { summarizeToolInput } from "@/lib/chat-utils";
 import type { PendingApproval, PendingQuestion } from "@/stores/chat-store";
@@ -21,6 +27,7 @@ interface ToolApprovalProps {
 
 export function ToolApproval({ approval, onApprove, onDeny }: ToolApprovalProps) {
   const [loading, setLoading] = useState<"approve" | "always" | "deny" | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const addRule = usePermissionsStore((s) => s.addRule);
 
   const suggestedRule = deriveAllowRule(approval.toolName, approval.input);
@@ -45,57 +52,79 @@ export function ToolApproval({ approval, onApprove, onDeny }: ToolApprovalProps)
   const summary = summarizeToolInput(approval.input);
 
   return (
-    <div className="mx-4 mb-4 rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-4">
-      <div className="mb-3 flex items-center gap-2">
-        <ShieldIcon className="size-4 text-yellow-500" />
-        <span className="text-sm font-medium">Pedido de permissão</span>
-        <Badge className="rounded-full text-xs" variant="secondary">
+    <div className="mx-4 mb-4 overflow-hidden rounded-xl border border-amber-500/25 bg-amber-500/[0.05] backdrop-blur-sm dark:border-amber-500/20 dark:bg-amber-500/[0.04]">
+      {/* Header */}
+      <div className="flex items-center gap-2.5 px-4 py-3">
+        <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-amber-500/15">
+          <ShieldIcon className="size-3 text-amber-600 dark:text-amber-400" />
+        </div>
+        <span className="flex-1 text-xs font-semibold text-foreground">Pedido de permissão</span>
+        <span className="rounded-md border border-amber-500/20 bg-amber-500/8 px-2 py-0.5 text-[10px] font-mono font-medium text-amber-600 dark:text-amber-400">
           {approval.toolName}
-        </Badge>
+        </span>
+        {summary && (
+          <button
+            className="flex size-5 items-center justify-center rounded text-muted-foreground/50 transition hover:text-muted-foreground"
+            onClick={() => setExpanded((v) => !v)}
+            type="button"
+          >
+            {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+          </button>
+        )}
       </div>
 
-      {summary && (
-        <p className="mb-3 rounded-md bg-muted/50 px-3 py-2 font-mono text-xs text-muted-foreground">
-          {summary}
-        </p>
+      {/* Summary — collapsible */}
+      {summary && expanded && (
+        <div className="border-t border-amber-500/15 px-4 py-2.5">
+          <p className="font-mono text-[11px] leading-relaxed text-muted-foreground">{summary}</p>
+        </div>
       )}
 
-      <div className="flex flex-wrap gap-2">
-        <Button
-          className="h-7 gap-1.5 text-xs"
+      {/* Summary pill — always visible */}
+      {summary && !expanded && (
+        <button
+          className="w-full border-t border-amber-500/10 px-4 py-2 text-left transition hover:bg-amber-500/[0.04]"
+          onClick={() => setExpanded(true)}
+          type="button"
+        >
+          <p className="truncate font-mono text-[11px] text-muted-foreground/70">{summary}</p>
+        </button>
+      )}
+
+      {/* Actions */}
+      <div className="flex items-center gap-2 border-t border-amber-500/15 px-4 py-2.5">
+        <button
+          className="flex h-7 items-center gap-1.5 rounded-lg bg-foreground px-3 text-xs font-medium text-background transition hover:bg-foreground/90 disabled:opacity-50"
           disabled={loading !== null}
           onClick={handleApprove}
-          size="sm"
-          variant="default"
+          type="button"
         >
           <CheckIcon className="size-3" />
           {loading === "approve" ? "A permitir..." : "Permitir"}
-        </Button>
+        </button>
 
         {suggestedRule && (
-          <Button
-            className="h-7 gap-1.5 text-xs"
+          <button
+            className="flex h-7 items-center gap-1.5 rounded-lg border border-border/60 px-3 text-xs text-muted-foreground transition hover:border-border hover:text-foreground disabled:opacity-50"
             disabled={loading !== null}
             onClick={handleAlways}
-            size="sm"
-            variant="outline"
             title={`Guardar regra: sempre permitir ${suggestedRule.label}`}
+            type="button"
           >
             <InfinityIcon className="size-3" />
             {loading === "always" ? "A guardar..." : `Sempre: ${suggestedRule.label}`}
-          </Button>
+          </button>
         )}
 
-        <Button
-          className="h-7 gap-1.5 text-xs"
+        <button
+          className="ml-auto flex h-7 items-center gap-1.5 rounded-lg border border-border/60 px-3 text-xs text-muted-foreground transition hover:border-destructive/40 hover:bg-destructive/5 hover:text-destructive disabled:opacity-50"
           disabled={loading !== null}
           onClick={handleDeny}
-          size="sm"
-          variant="outline"
+          type="button"
         >
           <XIcon className="size-3" />
           {loading === "deny" ? "A negar..." : "Negar"}
-        </Button>
+        </button>
       </div>
     </div>
   );
@@ -134,26 +163,30 @@ export function AskUserQuestion({ question, onAnswer }: AskUserQuestionProps) {
   };
 
   return (
-    <div className="mx-4 mb-4 rounded-lg border border-blue-500/30 bg-blue-500/5 p-4">
-      <div className="mb-4 flex items-center gap-2">
-        <MessageSquareIcon className="size-4 text-blue-500" />
-        <span className="text-sm font-medium">Claude tem uma pergunta</span>
+    <div className="mx-4 mb-4 overflow-hidden rounded-xl border border-primary/20 bg-primary/[0.04] backdrop-blur-sm dark:border-primary/15 dark:bg-primary/[0.04]">
+      {/* Header */}
+      <div className="flex items-center gap-2.5 border-b border-primary/15 px-4 py-3">
+        <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/15">
+          <MessageSquareIcon className="size-3 text-primary" />
+        </div>
+        <span className="text-xs font-semibold text-foreground">Claude tem uma pergunta</span>
       </div>
 
-      <div className="space-y-4">
+      {/* Questions */}
+      <div className="space-y-4 px-4 py-3.5">
         {question.questions.map((q) => (
           <div key={q.question}>
-            <p className="mb-2 text-sm font-medium">{q.question}</p>
-            <div className="flex flex-wrap gap-2">
+            <p className="mb-2.5 text-xs font-medium text-foreground/90">{q.question}</p>
+            <div className="flex flex-wrap gap-1.5">
               {q.options.map((option) => {
                 const selected = answers[q.question]?.split(", ").includes(option.label);
                 return (
                   <button
                     className={cn(
-                      "rounded-md border px-3 py-1.5 text-left text-xs transition-colors",
+                      "rounded-lg border px-3 py-1.5 text-left text-xs transition-all duration-100",
                       selected
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border bg-background hover:bg-muted"
+                        ? "border-primary/50 bg-primary/10 text-primary shadow-sm"
+                        : "border-border/50 bg-background/40 text-muted-foreground hover:border-border hover:bg-background/70 hover:text-foreground"
                     )}
                     key={option.label}
                     onClick={() => handleSelect(q.question, option.label, q.multiSelect)}
@@ -169,15 +202,16 @@ export function AskUserQuestion({ question, onAnswer }: AskUserQuestionProps) {
         ))}
       </div>
 
-      <div className="mt-4">
-        <Button
-          className="h-7 text-xs"
+      {/* Submit */}
+      <div className="flex justify-end border-t border-primary/15 px-4 py-2.5">
+        <button
+          className="flex h-7 items-center gap-1.5 rounded-lg bg-primary px-4 text-xs font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-40"
           disabled={!allAnswered || loading}
           onClick={handleSubmit}
-          size="sm"
+          type="button"
         >
           {loading ? "A enviar..." : "Responder"}
-        </Button>
+        </button>
       </div>
     </div>
   );
