@@ -163,6 +163,34 @@ export type ChatStreamEvent =
           multiSelect: boolean;
         }>;
       };
+    }
+  | {
+      requestId: string;
+      type: "sessionInfo";
+      models: DynamicModel[];
+      account: SessionAccountInfo;
+    }
+  | {
+      requestId: string;
+      type: "authStatus";
+      isAuthenticating: boolean;
+      error?: string;
+    }
+  | {
+      requestId: string;
+      type: "subagentStart";
+      provider: ChatProvider;
+      taskId: string;
+      description: string;
+      toolUseId?: string | null;
+    }
+  | {
+      requestId: string;
+      type: "subagentDone";
+      provider: ChatProvider;
+      taskId: string;
+      status: "completed" | "failed" | "stopped";
+      summary: string;
     };
 
 export interface WorkspaceInfo {
@@ -335,6 +363,7 @@ export type AgentSession = {
   } | null;
   permissionMode?: PermissionMode;
   toolTimeline: ToolTimelineItem[];
+  subagents: SubagentInfo[];
   reasoningText: string;
   compactCount: number;
   permissionDenials: string[];
@@ -363,6 +392,17 @@ export type ToolTimelineItem = {
   finishedAt: number | null;
 };
 
+export type SubagentInfo = {
+  taskId: string;
+  description: string;
+  toolUseId?: string | null;
+  /** "background" = spawned and running independently (team agent), no further tracking */
+  status: "running" | "completed" | "failed" | "stopped" | "background";
+  summary?: string;
+  startedAt: number;
+  finishedAt?: number;
+};
+
 export type EditorTab = {
   id: string;
   rootPath: string;
@@ -374,6 +414,19 @@ export type EditorTab = {
 };
 
 export type ModelOption = { value: string; label: string; releasedAt?: string };
+
+export type DynamicModel = {
+  value: string;
+  displayName: string;
+  description: string;
+  supportsMaxEffort: boolean;
+};
+
+export type SessionAccountInfo = {
+  email?: string;
+  subscriptionType?: string;
+  apiKeySource?: string;
+};
 
 export const MODEL_OPTIONS: ModelOption[] = [
   { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", releasedAt: "2026-02-17" },

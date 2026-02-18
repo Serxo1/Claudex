@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, nativeImage, safeStorage, dialog, globalShortcut } = require("electron");
+const { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage, dialog, globalShortcut, Notification, shell } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const { randomUUID } = require("node:crypto");
@@ -81,7 +81,7 @@ async function createWindow() {
     icon: path.join(__dirname, "../public/logo.png"),
     ...(isDarwin
       ? {
-          vibrancy: "under-window",
+          vibrancy: nativeTheme.shouldUseDarkColors ? "sidebar" : null,
           visualEffectState: "active",
           transparent: true,
           titleBarStyle: "hiddenInset",
@@ -100,10 +100,11 @@ async function createWindow() {
   if (devServerUrl) {
     await mainWindow.loadURL(devServerUrl);
     mainWindow.webContents.openDevTools({ mode: "detach" });
-    return;
+    return mainWindow;
   }
 
   await mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"));
+  return mainWindow;
 }
 
 app.whenReady().then(() => {
@@ -113,7 +114,13 @@ app.whenReady().then(() => {
     });
   }
 
-  createWindow();
+  createWindow().then((mainWindow) => {
+    if (process.platform === "darwin" && mainWindow) {
+      nativeTheme.on("updated", () => {
+        mainWindow.setVibrancy(nativeTheme.shouldUseDarkColors ? "sidebar" : null);
+      });
+    }
+  });
 
   // ── Settings ──────────────────────────────────────────────────────────
 
@@ -779,6 +786,95 @@ app.whenReady().then(() => {
     if (typeof approvalId !== "string") return { ok: false };
     const ok = chat.resolveApproval(approvalId, response);
     return { ok };
+  });
+
+  // ── Notifications ──────────────────────────────────────────────────────
+
+  ipcMain.handle("app:notify", (_event, payload = {}) => {
+    try {
+      if (Notification.isSupported()) {
+        const n = new Notification({
+          title: typeof payload.title === "string" ? payload.title : "Claudex",
+          body: typeof payload.body === "string" ? payload.body : "",
+          silent: false
+        });
+        n.on("click", () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.show();
+            mainWindow.focus();
+          }
+        });
+        n.show();
+      }
+    } catch {
+      // Ignore
+    }
+    return { ok: true };
+  });
+
+  // ── MCP servers ────────────────────────────────────────────────────────
+
+  ipcMain.handle("mcp:getServers", () => {
+    try {
+      // Use app.getPath("home") — guaranteed to be correct in Electron
+      const homeDir = app.getPath("home");
+      const settingsPath = path.join(homeDir, ".claude", "settings.json");
+
+      if (!fs.existsSync(settingsPath)) return [];
+
+      const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+      const results = [];
+
+      // enabledPlugins: { "name@source": true, ... }
+      const enabledPlugins = parsed.enabledPlugins || {};
+      for (const [key, enabled] of Object.entries(enabledPlugins)) {
+        if (!enabled) continue;
+        const atIdx = key.lastIndexOf("@");
+        results.push({
+          name: atIdx >= 0 ? key.slice(0, atIdx) : key,
+          type: "plugin",
+          enabled: true,
+          status: "connected",
+          command: "",
+          description: atIdx >= 0 ? key.slice(atIdx + 1) : ""
+        });
+      }
+
+      // mcpServers: { "name": { command, args, ... }, ... }
+      const mcpServers = parsed.mcpServers || {};
+      for (const [name, config] of Object.entries(mcpServers)) {
+        results.push({
+          name,
+          type: "mcp",
+          enabled: true,
+          status: "disconnected",
+          command: Array.isArray(config.args)
+            ? `${config.command || ""} ${config.args.join(" ")}`.trim()
+            : (config.command || ""),
+          description: config.description || ""
+        });
+      }
+
+      return results;
+    } catch {
+      return [];
+    }
+  });
+
+  ipcMain.handle("mcp:openConfigFile", async () => {
+    try {
+      const os = require("node:os");
+      const configPath = path.join(os.homedir(), ".claude", "settings.json");
+      // Create file with empty mcpServers if it doesn't exist
+      if (!fs.existsSync(configPath)) {
+        fs.mkdirSync(path.dirname(configPath), { recursive: true });
+        fs.writeFileSync(configPath, JSON.stringify({ mcpServers: {} }, null, 2));
+      }
+      await shell.openPath(configPath);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
   });
 
   // ── Debug ─────────────────────────────────────────────────────────────

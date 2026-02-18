@@ -2,7 +2,16 @@ const { randomUUID } = require("node:crypto");
 const { spawn } = require("node:child_process");
 
 const { collectContextDirs, normalizeContextFiles } = require("./workspace.cjs");
-const { logError } = require("./logger.cjs");
+const {
+  logError,
+  logSDKStart,
+  logSDKTool,
+  logSDKToolResult,
+  logSDKSubagentStart,
+  logSDKSubagentDone,
+  logSDKDone,
+  logSDKAborted,
+} = require("./logger.cjs");
 const { ANTHROPIC_API_URL, ANTHROPIC_API_VERSION, MAX_TOKENS_DEFAULT, CONTEXT_WINDOW_DEFAULT } = require("./constants.cjs");
 const { getPluginConfigs } = require("./skills.cjs");
 
@@ -75,6 +84,8 @@ async function startSDKStream({
   const cwd = allDirs[0] || process.cwd();
   const additionalDirectories = allDirs.slice(1);
 
+  logSDKStart(requestId, model, cwd, message);
+
   // canUseTool: intercept every tool call — permissions + AskUserQuestion
   const canUseTool = async (toolName, input) => {
     if (entry.aborted) {
@@ -112,6 +123,10 @@ async function startSDKStream({
   let latestCallCacheReadTokens = 0;
   let latestCallCacheCreationTokens = 0;
   let latestCallOutputTokens = 0;
+  // SDK session log tracking
+  const sessionStartMs = Date.now();
+  const toolInfo = new Map(); // toolUseId -> { name, startMs }
+  let activeTaskDepth = 0; // indentation level: >0 means inside a Task execution
 
   const { query } = await getSdk();
 
@@ -134,8 +149,45 @@ async function startSDKStream({
       sdkOptions.effortLevel = effort;
     }
 
-    for await (const msg of query({ prompt: message, options: sdkOptions })) {
+    const q = query({ prompt: message, options: sdkOptions });
+
+    // Resolve session info in parallel — does not block the stream
+    if (typeof q.initializationResult === "function") {
+      q.initializationResult().then((info) => {
+        if (!info) return;
+        const models = Array.isArray(info.models)
+          ? info.models
+              .map((m) => {
+                // Prefer the actual model ID (e.g. "claude-opus-4-6") over a display-style value
+                const modelId = m.modelId || m.id || m.value || "";
+                const displayName = m.displayName || m.label || m.name || m.value || modelId;
+                return {
+                  value: modelId,
+                  displayName,
+                  description: m.description || "",
+                  supportsMaxEffort: /opus/i.test(modelId)
+                };
+              })
+              .filter((m) => m.value)
+          : [];
+        sendStreamEvent(webContents, {
+          requestId, type: "sessionInfo",
+          models, account: info.account || {}
+        });
+      }).catch(() => {});
+    }
+
+    for await (const msg of q) {
       if (entry.aborted) break;
+
+      if (msg.type === "auth_status") {
+        sendStreamEvent(webContents, {
+          requestId, type: "authStatus",
+          isAuthenticating: Boolean(msg.isAuthenticating),
+          error: typeof msg.error === "string" ? msg.error : undefined
+        });
+        continue;
+      }
 
       if (msg.type === "system" && msg.subtype === "init") {
         if (msg.session_id) sessionId = msg.session_id;
@@ -161,6 +213,35 @@ async function startSDKStream({
 
       if (msg.type === "system" && msg.subtype === "compact_boundary") {
         sendStreamEvent(webContents, { requestId, type: "compactBoundary", provider: "claude-cli" });
+        continue;
+      }
+
+      if (msg.type === "system" && msg.subtype === "task_started") {
+        const taskId = typeof msg.task_id === "string" ? msg.task_id : String(Date.now());
+        const desc = typeof msg.description === "string" && msg.description.trim()
+          ? msg.description.trim() : "Subagente a executar...";
+        logSDKSubagentStart(taskId, desc);
+        sendStreamEvent(webContents, {
+          requestId, type: "subagentStart", provider: "claude-cli",
+          taskId,
+          description: desc,
+          toolUseId: typeof msg.tool_use_id === "string" ? msg.tool_use_id : null
+        });
+        continue;
+      }
+
+      if (msg.type === "system" && msg.subtype === "task_notification") {
+        const taskStatus = msg.status === "failed" || msg.status === "stopped"
+          ? msg.status : "completed";
+        const summary = typeof msg.summary === "string" ? msg.summary.trim() : "";
+        const taskId = typeof msg.task_id === "string" ? msg.task_id : "";
+        logSDKSubagentDone(taskId, taskStatus, summary);
+        sendStreamEvent(webContents, {
+          requestId, type: "subagentDone", provider: "claude-cli",
+          taskId,
+          status: taskStatus,
+          summary
+        });
         continue;
       }
 
@@ -215,6 +296,23 @@ async function startSDKStream({
         for (const block of blocks) {
           if (!block || block.type !== "tool_use") continue;
           const toolUseId = typeof block.id === "string" && block.id.trim() ? block.id.trim() : randomUUID();
+          const toolName = block.name || "tool";
+          toolInfo.set(toolUseId, { name: toolName, startMs: Date.now() });
+          // Build a short summary for the log
+          const inp = block.input && typeof block.input === "object" ? block.input : {};
+          let inputLog = "";
+          if (toolName === "Task") {
+            const agentName = inp.name ? `[${inp.name}] ` : "";
+            inputLog = `${agentName}${inp.description || inp.prompt?.slice(0, 60) || ""}`;
+          } else if (toolName === "TeamCreate") {
+            inputLog = `team_name=${inp.team_name || "?"}`;
+          } else {
+            const keys = Object.keys(inp).slice(0, 2);
+            inputLog = keys.map((k) => `${k}=${String(inp[k]).slice(0, 30)}`).join(" ");
+          }
+          const logDepth = activeTaskDepth;
+          if (toolName === "Task" || toolName === "TeamCreate") activeTaskDepth++;
+          logSDKTool(requestId, toolName, inputLog, logDepth);
           sendStreamEvent(webContents, {
             requestId, type: "toolUse", provider: "claude-cli",
             toolUseId, name: block.name || "tool",
@@ -233,6 +331,21 @@ async function startSDKStream({
           if (!block || block.type !== "tool_result") continue;
           const toolUseId = typeof block.tool_use_id === "string" && block.tool_use_id.trim()
             ? block.tool_use_id.trim() : randomUUID();
+          const tInfo = toolInfo.get(toolUseId) || { name: "tool", startMs: null };
+          const durationMs = tInfo.startMs ? Date.now() - tInfo.startMs : null;
+          if (tInfo.name === "Task" || tInfo.name === "TeamCreate") {
+            activeTaskDepth = Math.max(0, activeTaskDepth - 1);
+          }
+          toolInfo.delete(toolUseId);
+          // Extract a brief result text for the log
+          let resultLog = "";
+          if (Array.isArray(block.content)) {
+            const textBlock = block.content.find((b) => b.type === "text");
+            resultLog = textBlock?.text?.slice(0, 80) || "";
+          } else if (typeof block.content === "string") {
+            resultLog = block.content.slice(0, 80);
+          }
+          logSDKToolResult(requestId, tInfo.name, Boolean(block.is_error), resultLog, durationMs, activeTaskDepth);
           sendStreamEvent(webContents, {
             requestId, type: "toolResult", provider: "claude-cli",
             toolUseId, isError: Boolean(block.is_error),
@@ -284,11 +397,15 @@ async function startSDKStream({
           onSessionId(sessionId);
         }
 
+        const totalIn = (msg.usage?.input_tokens ?? latestCallInputTokens) || 0;
+        const totalOut = (msg.usage?.output_tokens ?? latestCallOutputTokens) || 0;
+
         if (msg.is_error) {
           const errorMsg = msg.result || (Array.isArray(msg.errors) ? msg.errors.join(", ") : "Unknown error");
           if (sessionId && isRecoverableResumeError(errorMsg) && typeof onSessionReset === "function") {
             onSessionReset();
           }
+          logSDKDone(requestId, Date.now() - sessionStartMs, totalIn, totalOut, sessionCostUsd, true);
           sendStreamEvent(webContents, {
             requestId, type: "error",
             error: `Claude CLI failed: ${errorMsg}`,
@@ -304,6 +421,7 @@ async function startSDKStream({
           content = command === "/compact" ? "Compacted." : `${command} executed.`;
         }
 
+        logSDKDone(requestId, Date.now() - sessionStartMs, totalIn, totalOut, sessionCostUsd, false);
         sendStreamEvent(webContents, {
           requestId, type: "done",
           content, sessionCostUsd,
@@ -315,6 +433,7 @@ async function startSDKStream({
   } catch (err) {
     activeStreamRequests.delete(requestId);
     if (entry.aborted) {
+      logSDKAborted(requestId);
       sendStreamEvent(webContents, { requestId, type: "aborted", provider: "claude-cli" });
       return;
     }

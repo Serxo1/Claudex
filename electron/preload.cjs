@@ -56,6 +56,13 @@ contextBridge.exposeInMainWorld("desktop", {
       return () => ipcRenderer.removeListener("terminal:exit", listener);
     }
   },
+  app: {
+    notify: (payload) => ipcRenderer.invoke("app:notify", payload)
+  },
+  mcp: {
+    getServers: () => ipcRenderer.invoke("mcp:getServers"),
+    openConfigFile: () => ipcRenderer.invoke("mcp:openConfigFile")
+  },
   debug: {
     openDevTools: () => ipcRenderer.invoke("debug:openDevTools")
   },

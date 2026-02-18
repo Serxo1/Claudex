@@ -12,7 +12,7 @@ import type {
 import { FALLBACK_SLASH_COMMANDS, THREADS_STORAGE_KEY, deriveThreadStatus } from "@/lib/chat-types";
 import {
   appendReasoningLine,
-  isOpusModel,
+  supportsMaxEffort,
   normalizeErrorMessage,
   summarizeToolInput,
   summarizeToolResult
@@ -129,6 +129,7 @@ function sanitizeSession(raw: Record<string, unknown>): AgentSession | null {
           (item) => item && typeof item.toolUseId === "string"
         )
       : [],
+    subagents: [],
     reasoningText: typeof raw.reasoningText === "string" ? (raw.reasoningText as string) : "",
     compactCount: typeof raw.compactCount === "number" ? (raw.compactCount as number) : 0,
     permissionDenials: Array.isArray(raw.permissionDenials)
@@ -137,6 +138,15 @@ function sanitizeSession(raw: Record<string, unknown>): AgentSession | null {
     createdAt: typeof raw.createdAt === "number" ? (raw.createdAt as number) : Date.now(),
     updatedAt: typeof raw.updatedAt === "number" ? (raw.updatedAt as number) : Date.now()
   };
+}
+
+const THREAD_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
+
+function shouldArchiveThread(thread: Thread): boolean {
+  // Keep threads with no sessions (new/empty ones), active threads, and recent ones
+  if (thread.sessions.length === 0) return false;
+  if (thread.status === "running" || thread.status === "needs_attention") return false;
+  return Date.now() - thread.updatedAt > THREAD_MAX_AGE_MS;
 }
 
 function safeLoadThreads(): Thread[] {
@@ -203,6 +213,7 @@ function safeLoadThreads(): Thread[] {
                 ? (t.accumulatedCostUsd as number)
                 : undefined,
             toolTimeline: [],
+            subagents: [],
             reasoningText: "",
             compactCount: 0,
             permissionDenials: [],
@@ -239,7 +250,8 @@ function safeLoadThreads(): Thread[] {
       })
       .filter((t: Thread) => t.sessions.length > 0 || true); // Keep empty threads too
 
-    return threads.length > 0 ? threads : [makeDefaultThread()];
+    const active = threads.filter((t) => !shouldArchiveThread(t));
+    return active.length > 0 ? active : [makeDefaultThread()];
   } catch {
     return [makeDefaultThread()];
   }
@@ -284,6 +296,7 @@ type ChatState = {
   addWorkspaceDirToThread: (threadId: string, dir: string) => void;
   removeWorkspaceDirFromThread: (threadId: string, dir: string) => void;
   deleteThread: (threadId: string) => void;
+  renameSession: (threadId: string, sessionId: string, title: string) => void;
   makeMessage: typeof makeMessage;
   deriveThreadTitle: typeof deriveThreadTitle;
 };
@@ -368,6 +381,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       const { threadId, sessionId } = location;
 
+      if (event.type === "sessionInfo") {
+        useSettingsStore.getState().setDynamicSessionInfo(event.models, event.account);
+        return;
+      }
+
+      if (event.type === "authStatus" && event.error) {
+        useSettingsStore.getState().setAuthExpired(true);
+        return;
+      }
+
       if (event.type === "slashCommands") {
         if (event.commands.length > 0) {
           set({ slashCommands: Array.from(new Set(event.commands)) });
@@ -413,6 +436,93 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set((state) => ({
           threads: patchSession(state.threads, threadId, sessionId, (s) => ({
             permissionDenials: [...new Set([...s.permissionDenials, ...event.denials])]
+          }))
+        }));
+        return;
+      }
+
+      if (event.type === "subagentStart") {
+        set((state) => ({
+          threads: patchSession(state.threads, threadId, sessionId, (s) => {
+            // 1. Match by toolUseId (most reliable)
+            const existingByToolUse = event.toolUseId
+              ? s.subagents.find((a) => a.toolUseId === event.toolUseId)
+              : null;
+            if (existingByToolUse) {
+              return {
+                subagents: s.subagents.map((a) =>
+                  a.toolUseId === event.toolUseId ? { ...a, taskId: event.taskId } : a
+                )
+              };
+            }
+            // 2. Match by agent name extracted from description
+            //    task_started description format: "agentName: prompt..."
+            //    toolUse description format: "[agentName] rawDesc"
+            const nameFromDesc = event.description.split(":")[0].trim().toLowerCase();
+            const existingByName = nameFromDesc
+              ? s.subagents.find(
+                  (a) =>
+                    a.taskId === a.toolUseId && // created from toolUse, not yet linked
+                    a.description.toLowerCase().includes(`[${nameFromDesc}]`)
+                )
+              : null;
+            if (existingByName) {
+              return {
+                subagents: s.subagents.map((a) =>
+                  a === existingByName ? { ...a, taskId: event.taskId } : a
+                )
+              };
+            }
+            // 3. Fallback: match by exact description
+            const existingByDesc = s.subagents.find(
+              (a) => a.description === event.description && a.taskId === a.toolUseId
+            );
+            if (existingByDesc) {
+              return {
+                subagents: s.subagents.map((a) =>
+                  a === existingByDesc ? { ...a, taskId: event.taskId } : a
+                )
+              };
+            }
+            // 4. If an existing entry already covers this agent name, don't create duplicate
+            if (
+              nameFromDesc &&
+              s.subagents.some((a) => a.description.toLowerCase().includes(`[${nameFromDesc}]`))
+            ) {
+              return {
+                subagents: s.subagents.map((a) =>
+                  a.description.toLowerCase().includes(`[${nameFromDesc}]`)
+                    ? { ...a, taskId: event.taskId }
+                    : a
+                )
+              };
+            }
+            // 5. Truly new subagent not yet tracked
+            return {
+              subagents: [
+                ...s.subagents,
+                {
+                  taskId: event.taskId,
+                  description: event.description,
+                  toolUseId: event.toolUseId,
+                  status: "running" as const,
+                  startedAt: Date.now()
+                }
+              ]
+            };
+          })
+        }));
+        return;
+      }
+
+      if (event.type === "subagentDone") {
+        set((state) => ({
+          threads: patchSession(state.threads, threadId, sessionId, (s) => ({
+            subagents: s.subagents.map((a) =>
+              a.taskId === event.taskId || a.toolUseId === event.taskId
+                ? { ...a, status: event.status, summary: event.summary, finishedAt: Date.now() }
+                : a
+            )
           }))
         }));
         return;
@@ -490,8 +600,36 @@ export const useChatStore = create<ChatState>((set, get) => ({
                       finishedAt: null
                     }
                   ];
+            // Track Task tool uses as subagents
+            let nextSubagents = s.subagents;
+            if (
+              event.name === "Task" &&
+              !s.subagents.some((a) => a.toolUseId === event.toolUseId)
+            ) {
+              const inp = event.input as Record<string, unknown> | null;
+              const agentName = typeof inp?.name === "string" && inp.name ? inp.name : null;
+              const rawDesc =
+                typeof inp?.description === "string" && (inp.description as string).trim()
+                  ? (inp.description as string).trim()
+                  : typeof inp?.prompt === "string"
+                    ? (inp.prompt as string).trim().slice(0, 80)
+                    : "Subagente";
+              const displayDesc = agentName ? `[${agentName}] ${rawDesc}` : rawDesc;
+              nextSubagents = [
+                ...s.subagents,
+                {
+                  taskId: event.toolUseId,
+                  description: displayDesc,
+                  toolUseId: event.toolUseId,
+                  status: "running" as const,
+                  startedAt: event.timestamp
+                }
+              ];
+            }
+
             return {
               toolTimeline: nextItems,
+              subagents: nextSubagents,
               reasoningText: appendReasoningLine(s.reasoningText, `Calling ${event.name}...`),
               isThinking: true,
               status: "running" as const
@@ -531,8 +669,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   ];
             const toolName =
               currentItems.find((item) => item.toolUseId === event.toolUseId)?.name ?? "tool";
+
+            // Update subagent status for Task tool results
+            const isSpawned =
+              typeof resultSummary === "string" && resultSummary.toLowerCase().includes("spawn");
+            const nextSubagents = s.subagents.map((a) => {
+              if (a.toolUseId !== event.toolUseId) return a;
+              // Background/team agent: "Spawned successfully" → mark as "background"
+              if (!event.isError && isSpawned) return { ...a, status: "background" as const };
+              return {
+                ...a,
+                status: event.isError ? ("failed" as const) : ("completed" as const),
+                summary: resultSummary || undefined,
+                finishedAt: event.timestamp
+              };
+            });
+
             return {
               toolTimeline: nextItems,
+              subagents: nextSubagents,
               reasoningText: appendReasoningLine(
                 s.reasoningText,
                 event.isError ? `${toolName} failed.` : `${toolName} done.`
@@ -598,11 +753,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
               accumulatedCostUsd: prevCost + addCost,
               sessionId: event.sessionId ?? s.sessionId,
               updatedAt: Date.now(),
-              title: deriveThreadTitle(patchedMessages, s.title)
+              title: deriveThreadTitle(patchedMessages, s.title),
+              // Any subagent still "running" when session ends was synchronous and timed out
+              subagents: (s.subagents ?? []).map((a) =>
+                a.status === "running"
+                  ? { ...a, status: "completed" as const, finishedAt: Date.now() }
+                  : a
+              )
             };
           })
         }));
         useSettingsStore.getState().setStatus(`Reply via ${event.provider}.`);
+        // Send native notification if the app is not focused
+        try {
+          const threadForNotify = get().threads.find((t) =>
+            t.sessions.some((s) => s.id === sessionId)
+          );
+          const sessionForNotify = threadForNotify?.sessions.find((s) => s.id === sessionId);
+          void window.desktop.app?.notify({
+            title: sessionForNotify?.title ?? "Sessão concluída",
+            body: threadForNotify?.title ?? "O agente terminou."
+          });
+        } catch {
+          // Ignore notification errors
+        }
         void Promise.all([
           useSettingsStore.getState().refreshSettings(),
           useGitStore.getState().refreshGitSummary(),
@@ -615,14 +789,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (event.type === "aborted") {
         _activeStreams.delete(event.requestId);
         set((state) => ({
-          threads: patchSession(state.threads, threadId, sessionId, {
-            status: "idle",
+          threads: patchSession(state.threads, threadId, sessionId, (s) => ({
+            status: "idle" as const,
             requestId: undefined,
             pendingApproval: null,
             pendingQuestion: null,
             isThinking: false,
-            runningStartedAt: undefined
-          })
+            runningStartedAt: undefined,
+            subagents: (s.subagents ?? []).map((a) =>
+              a.status === "running"
+                ? { ...a, status: "stopped" as const, finishedAt: Date.now() }
+                : a
+            )
+          }))
         }));
         useSettingsStore.getState().setStatus("Response interrupted.");
         return;
@@ -659,7 +838,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
               pendingQuestion: null,
               isThinking: false,
               runningStartedAt: undefined,
-              updatedAt: Date.now()
+              updatedAt: Date.now(),
+              subagents: (s.subagents ?? []).map((a) =>
+                a.status === "running"
+                  ? { ...a, status: "failed" as const, finishedAt: Date.now() }
+                  : a
+              )
             };
           })
         }));
@@ -886,6 +1070,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           isThinking: true,
           reasoningText: "Preparing execution...",
           toolTimeline: [],
+          subagents: [],
           runningStartedAt: Date.now(),
           updatedAt: Date.now()
         }))
@@ -894,7 +1079,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       try {
         const started = await window.desktop.chat.startStream({
           messages: messagesForSend,
-          effort: isOpusModel(settings.model) && effort ? effort : undefined,
+          effort:
+            supportsMaxEffort(settings.model, useSettingsStore.getState().dynamicModels) && effort
+              ? effort
+              : undefined,
           contextFiles: contextForSend,
           resumeSessionId: targetSession.sessionId ?? "",
           workspaceDirs: activeThread.workspaceDirs
@@ -938,6 +1126,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       status: "running",
       requestId: undefined,
       toolTimeline: [],
+      subagents: [],
       reasoningText: "Preparing execution...",
       isThinking: true,
       runningStartedAt: Date.now(),
@@ -967,7 +1156,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const started = await window.desktop.chat.startStream({
         messages: messagesForSend,
-        effort: isOpusModel(settings.model) && effort ? effort : undefined,
+        effort:
+          supportsMaxEffort(settings.model, useSettingsStore.getState().dynamicModels) && effort
+            ? effort
+            : undefined,
         contextFiles: contextForSend,
         resumeSessionId: "",
         workspaceDirs: activeThread.workspaceDirs
@@ -1024,6 +1216,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
         state.activeThreadId === threadId ? (remaining[0]?.id ?? "") : state.activeThreadId;
       return { threads: remaining, activeThreadId: nextActiveId };
     });
+  },
+
+  renameSession: (threadId, sessionId, title) => {
+    set((state) => ({
+      threads: state.threads.map((t) =>
+        t.id !== threadId
+          ? t
+          : {
+              ...t,
+              sessions: t.sessions.map((s) =>
+                s.id === sessionId ? { ...s, title: title.trim() || s.title } : s
+              )
+            }
+      )
+    }));
   },
 
   makeMessage,

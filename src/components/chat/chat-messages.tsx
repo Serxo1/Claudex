@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, CircleAlert, Clock3, ChevronDownIcon, Wrench } from "lucide-react";
+import { SubagentTimeline } from "@/components/chat/subagent-timeline";
 import {
   Attachment,
   AttachmentHoverCard,
@@ -61,6 +62,7 @@ export function ChatMessages({
 
   const messages = session.messages;
   const toolTimeline = session.toolTimeline ?? EMPTY_ARRAY;
+  const subagents = session.subagents ?? EMPTY_ARRAY;
   const isThinking = session.isThinking ?? false;
   const reasoningText = session.reasoningText ?? "";
   const compactCount = session.compactCount ?? 0;
@@ -175,6 +177,10 @@ export function ChatMessages({
                     </Reasoning>
                   ) : null}
 
+                  {subagents.length > 0 ? (
+                    <SubagentTimeline subagents={subagents} isRunning={isRunning} />
+                  ) : null}
+
                   {toolTimeline.length > 0 ? (
                     <Collapsible onOpenChange={setTaskOpen} open={taskOpen}>
                       <CollapsibleTrigger className="group flex items-center gap-1.5 text-xs text-muted-foreground/60 transition-colors hover:text-muted-foreground">
@@ -250,6 +256,13 @@ export function ChatMessages({
                   <MessageResponse className="text-[14px] leading-6 text-current">
                     {message.content}
                   </MessageResponse>
+                  {message.role === "assistant" &&
+                  index === lastAssistantIdx &&
+                  subagents.length > 0 ? (
+                    <div className="mt-3 border-t border-border/30 pt-3">
+                      <SubagentTimeline isRunning={false} subagents={subagents} />
+                    </div>
+                  ) : null}
                   {message.role === "user" &&
                   Array.isArray(message.attachments) &&
                   message.attachments.length > 0 ? (

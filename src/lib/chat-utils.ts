@@ -1,5 +1,5 @@
 import type { AttachmentData } from "@/components/ai-elements/attachments";
-import type { ContextAttachment, PermissionMode } from "@/lib/chat-types";
+import type { ContextAttachment, DynamicModel, PermissionMode } from "@/lib/chat-types";
 import { TERMINAL_REQUIRED_SLASH_COMMANDS } from "@/lib/chat-types";
 
 export function formatPermissionMode(mode: PermissionMode): string {
@@ -200,6 +200,8 @@ export function ideChipLabel(ideId?: string): string {
       return "Zd";
     case "webstorm":
       return "Wb";
+    case "antigravity":
+      return "Ag";
     default:
       return "IDE";
   }
@@ -207,6 +209,11 @@ export function ideChipLabel(ideId?: string): string {
 
 export function isOpusModel(model: string): boolean {
   return /opus/i.test(model);
+}
+
+export function supportsMaxEffort(modelId: string, dynamicModels: DynamicModel[]): boolean {
+  const found = dynamicModels.find((m) => m.value === modelId);
+  return found ? found.supportsMaxEffort : /opus/i.test(modelId);
 }
 
 export function slashCommandNeedsTerminal(command: string): boolean {

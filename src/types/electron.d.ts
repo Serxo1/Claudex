@@ -116,6 +116,22 @@ declare global {
         respondToApproval: (approvalId: string, response: unknown) => Promise<{ ok: boolean }>;
         onStreamEvent: (callback: (event: ChatStreamEvent) => void) => () => void;
       };
+      app: {
+        notify: (payload: { title: string; body?: string }) => Promise<{ ok: boolean }>;
+      };
+      mcp: {
+        getServers: () => Promise<
+          Array<{
+            name: string;
+            type: "mcp" | "plugin";
+            enabled: boolean;
+            status: "connected" | "error" | "disconnected";
+            command?: string;
+            description?: string;
+          }>
+        >;
+        openConfigFile: () => Promise<{ ok: boolean; error?: string }>;
+      };
       debug: {
         openDevTools: () => Promise<void>;
       };

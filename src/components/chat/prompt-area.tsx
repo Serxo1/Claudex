@@ -50,7 +50,7 @@ import { cn } from "@/lib/utils";
 import { SLASH_COMMAND_DESCRIPTIONS } from "@/lib/chat-types";
 import type { AgentSession } from "@/lib/chat-types";
 import { ComposerPromptAttachments } from "@/components/chat/composer-attachments";
-import { isOpusModel, slashCommandNeedsTerminal, toAttachmentData } from "@/lib/chat-utils";
+import { supportsMaxEffort, slashCommandNeedsTerminal, toAttachmentData } from "@/lib/chat-utils";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useGitStore } from "@/stores/git-store";
@@ -95,6 +95,7 @@ export function PromptArea({
   const settings = useSettingsStore((s) => s.settings);
   const isBusy = useSettingsStore((s) => s.isBusy);
   const onSetModel = useSettingsStore((s) => s.onSetModel);
+  const dynamicModels = useSettingsStore((s) => s.dynamicModels);
 
   const contextFiles = useWorkspaceStore((s) => s.contextFiles);
   const setContextFiles = useWorkspaceStore((s) => s.setContextFiles);
@@ -117,7 +118,13 @@ export function PromptArea({
   const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
 
-  const showEffortSelector = isOpusModel(settings?.model || "");
+  const currentModel = settings?.model || "";
+  const showMaxEffort = supportsMaxEffort(currentModel, dynamicModels);
+  const activeModelOptions =
+    dynamicModels.length > 0
+      ? dynamicModels.map((m) => ({ value: m.value, label: m.displayName }))
+      : modelOptions;
+
   const contextAttachmentItems = useMemo<AttachmentData[]>(
     () => contextFiles.map((file) => toAttachmentData(file)),
     [contextFiles]
@@ -498,11 +505,12 @@ export function PromptArea({
                 <PromptInputSelectValue />
               </PromptInputSelectTrigger>
               <PromptInputSelectContent>
-                {modelOptions.map((model) => (
+                {activeModelOptions.map((model) => (
                   <PromptInputSelectItem key={model.value} value={model.value}>
                     <span className="flex items-center gap-2">
                       {model.label}
-                      {isModelNew(model.releasedAt) ? (
+                      {"releasedAt" in model &&
+                      isModelNew((model as { releasedAt?: string }).releasedAt) ? (
                         <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-emerald-500">
                           NEW
                         </span>
@@ -513,18 +521,19 @@ export function PromptArea({
               </PromptInputSelectContent>
             </PromptInputSelect>
 
-            {showEffortSelector ? (
-              <PromptInputSelect onValueChange={setEffort} value={effort}>
-                <PromptInputSelectTrigger className="h-8 min-w-32 rounded-md border border-border/60 bg-muted/30 px-2 py-1 text-xs">
-                  <PromptInputSelectValue />
-                </PromptInputSelectTrigger>
-                <PromptInputSelectContent>
-                  <PromptInputSelectItem value="low">Low effort</PromptInputSelectItem>
-                  <PromptInputSelectItem value="medium">Medium effort</PromptInputSelectItem>
-                  <PromptInputSelectItem value="high">High effort</PromptInputSelectItem>
-                </PromptInputSelectContent>
-              </PromptInputSelect>
-            ) : null}
+            <PromptInputSelect onValueChange={setEffort} value={effort}>
+              <PromptInputSelectTrigger className="h-8 min-w-32 rounded-md border border-border/60 bg-muted/30 px-2 py-1 text-xs">
+                <PromptInputSelectValue />
+              </PromptInputSelectTrigger>
+              <PromptInputSelectContent>
+                <PromptInputSelectItem value="low">Low effort</PromptInputSelectItem>
+                <PromptInputSelectItem value="medium">Medium effort</PromptInputSelectItem>
+                <PromptInputSelectItem value="high">High effort</PromptInputSelectItem>
+                {showMaxEffort ? (
+                  <PromptInputSelectItem value="max">Max effort</PromptInputSelectItem>
+                ) : null}
+              </PromptInputSelectContent>
+            </PromptInputSelect>
           </PromptInputTools>
 
           <PromptInputSubmit
