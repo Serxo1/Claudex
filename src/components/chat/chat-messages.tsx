@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, CircleAlert, Clock3, ChevronDownIcon, Wrench } from "lucide-react";
 import {
   Attachment,
@@ -37,50 +37,76 @@ import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-e
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { initialsFromName, toAttachmentData } from "@/lib/chat-utils";
+import type { AgentSession } from "@/lib/chat-types";
 import { useGitStore } from "@/stores/git-store";
-import { useChatStore } from "@/stores/chat-store";
 
 const EMPTY_ARRAY: never[] = [];
 
 export type ChatMessagesProps = {
-  activePage: "chat" | "preview";
+  session: AgentSession;
   chatContainerMax: string;
+  showCommits?: boolean;
 };
 
-export function ChatMessages({ activePage, chatContainerMax }: ChatMessagesProps) {
+export function ChatMessages({
+  session,
+  chatContainerMax,
+  showCommits = false
+}: ChatMessagesProps) {
   const recentCommits = useGitStore((s) => s.recentCommits);
+  const [reasoningOpen, setReasoningOpen] = useState(false);
+  const [taskOpen, setTaskOpen] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const messages = useChatStore((s) => {
-    const thread = s.threads.find((t) => t.id === s.activeThreadId) ?? s.threads[0] ?? null;
-    return thread?.messages ?? EMPTY_ARRAY;
-  });
-  const executionAssistantMessageId = useChatStore((s) => s.executionAssistantMessageId);
-  const isThinking = useChatStore((s) => s.isThinking);
-  const reasoningOpen = useChatStore((s) => s.reasoningOpen);
-  const setReasoningOpen = useChatStore((s) => s.setReasoningOpen);
-  const reasoningText = useChatStore((s) => s.reasoningText);
-  const activeToolTimeline = useChatStore((s) =>
-    s.executionRequestId
-      ? (s.activeToolTimelineByRequest[s.executionRequestId] ?? EMPTY_ARRAY)
-      : EMPTY_ARRAY
-  );
+  const messages = session.messages;
+  const toolTimeline = session.toolTimeline ?? EMPTY_ARRAY;
+  const isThinking = session.isThinking ?? false;
+  const reasoningText = session.reasoningText ?? "";
+  const compactCount = session.compactCount ?? 0;
+  const permissionDenials = session.permissionDenials ?? EMPTY_ARRAY;
+  const sessionCostUsd = session.sessionCostUsd ?? null;
+  const isRunning = session.status === "running" || session.status === "awaiting_approval";
+  const runningStartedAt = session.runningStartedAt;
+
+  // Elapsed time counter — active while running
+  useEffect(() => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    if (runningStartedAt && isRunning) {
+      setElapsedSeconds(Math.floor((Date.now() - runningStartedAt) / 1000));
+      intervalRef.current = setInterval(() => {
+        setElapsedSeconds(Math.floor((Date.now() - runningStartedAt) / 1000));
+      }, 1000);
+    } else {
+      setElapsedSeconds(0);
+    }
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [runningStartedAt, isRunning]);
+
+  // The last assistant message is the one currently streaming (if running)
+  const lastAssistantIdx = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant") return i;
+    }
+    return -1;
+  }, [messages]);
+
   const pendingTools = useMemo(
-    () => activeToolTimeline.filter((item) => item.status === "pending"),
-    [activeToolTimeline]
+    () => toolTimeline.filter((item) => item.status === "pending"),
+    [toolTimeline]
   );
-  const isSending = useChatStore((s) => s.isSending);
-  const taskOpen = useChatStore((s) => s.taskOpen);
-  const setTaskOpen = useChatStore((s) => s.setTaskOpen);
-  const compactCount = useChatStore((s) => s.compactCount);
-  const permissionDenials = useChatStore((s) => s.permissionDenials);
-  const sessionCostUsd = useChatStore((s) => s.sessionCostUsd);
 
   return (
     <Conversation className="min-h-0 flex-1">
       <ConversationContent
         className={cn("mx-auto w-full gap-5 px-4 pt-4 pb-6 lg:px-8", chatContainerMax)}
       >
-        {activePage === "chat" && recentCommits.length > 0 ? (
+        {showCommits && recentCommits.length > 0 ? (
           <div className="space-y-2">
             {recentCommits.map((commit) => (
               <Commit
@@ -125,7 +151,7 @@ export function ChatMessages({ activePage, chatContainerMax }: ChatMessagesProps
           </div>
         ) : null}
 
-        {messages.map((message) => (
+        {messages.map((message, index) => (
           <Message className="w-full max-w-full" from={message.role} key={message.id}>
             <MessageContent
               className={cn(
@@ -135,7 +161,7 @@ export function ChatMessages({ activePage, chatContainerMax }: ChatMessagesProps
                   : "border-border/50 bg-card text-foreground"
               )}
             >
-              {message.role === "assistant" && message.id === executionAssistantMessageId ? (
+              {message.role === "assistant" && index === lastAssistantIdx && isRunning ? (
                 <div className="space-y-3">
                   {isThinking ? (
                     <Reasoning
@@ -149,11 +175,11 @@ export function ChatMessages({ activePage, chatContainerMax }: ChatMessagesProps
                     </Reasoning>
                   ) : null}
 
-                  {activeToolTimeline.length > 0 ? (
+                  {toolTimeline.length > 0 ? (
                     <Collapsible onOpenChange={setTaskOpen} open={taskOpen}>
                       <CollapsibleTrigger className="group flex items-center gap-1.5 text-xs text-muted-foreground/60 transition-colors hover:text-muted-foreground">
                         <Wrench className="size-3 shrink-0" />
-                        {isSending && pendingTools.length > 0 ? (
+                        {isRunning && pendingTools.length > 0 ? (
                           <>
                             <span className="shrink-0 font-mono">
                               {pendingTools[pendingTools.length - 1]?.name}
@@ -164,15 +190,22 @@ export function ChatMessages({ activePage, chatContainerMax }: ChatMessagesProps
                           </>
                         ) : (
                           <span>
-                            {activeToolTimeline.length}{" "}
-                            {activeToolTimeline.length === 1 ? "ferramenta" : "ferramentas"}
+                            {toolTimeline.length}{" "}
+                            {toolTimeline.length === 1 ? "ferramenta" : "ferramentas"}
                           </span>
                         )}
-                        <ChevronDownIcon className="ml-0.5 size-3 transition-transform group-data-[state=open]:rotate-180" />
+                        {isRunning && elapsedSeconds > 0 ? (
+                          <span className="ml-auto font-mono text-muted-foreground/40 tabular-nums">
+                            {elapsedSeconds >= 60
+                              ? `${Math.floor(elapsedSeconds / 60)}m${String(elapsedSeconds % 60).padStart(2, "0")}s`
+                              : `${elapsedSeconds}s`}
+                          </span>
+                        ) : null}
+                        <ChevronDownIcon className="size-3 transition-transform group-data-[state=open]:rotate-180" />
                       </CollapsibleTrigger>
                       <CollapsibleContent className="mt-1.5">
                         <div className="space-y-0.5 pl-1">
-                          {activeToolTimeline.map((item) => (
+                          {toolTimeline.map((item) => (
                             <div
                               className="flex items-center gap-1.5 py-0.5 text-xs"
                               key={item.toolUseId}
@@ -246,6 +279,7 @@ export function ChatMessages({ activePage, chatContainerMax }: ChatMessagesProps
             </MessageContent>
           </Message>
         ))}
+
         {compactCount > 0 ? (
           <div className="text-center text-xs text-muted-foreground">
             Conversa compactada {compactCount > 1 ? `${compactCount}x` : ""}
@@ -260,8 +294,8 @@ export function ChatMessages({ activePage, chatContainerMax }: ChatMessagesProps
             <div className="flex flex-wrap gap-1">
               {permissionDenials.map((denial, i) => (
                 <span
-                  key={i}
                   className="rounded-full bg-orange-500/20 px-2 py-0.5 text-xs text-orange-700 dark:text-orange-300"
+                  key={i}
                 >
                   {denial}
                 </span>

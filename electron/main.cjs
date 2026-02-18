@@ -61,6 +61,7 @@ const git = require("./modules/git.cjs");
 const ide = require("./modules/ide.cjs");
 const terminal = require("./modules/terminal.cjs");
 const chat = require("./modules/chat.cjs");
+const skills = require("./modules/skills.cjs");
 const { logError } = require("./modules/logger.cjs");
 const { MAX_EDITOR_FILE_SIZE, PR_TIMEOUT_MS, TEMP_PASTE_DIR } = require("./modules/constants.cjs");
 
@@ -260,6 +261,15 @@ app.whenReady().then(() => {
     return { ok: true, path: picked, dirs: nextDirs };
   });
 
+  ipcMain.handle("workspace:pickDirectory", async () => {
+    const result = await dialog.showOpenDialog({
+      defaultPath: WORKSPACE_DIR,
+      properties: ["openDirectory"]
+    });
+    if (result.canceled || result.filePaths.length === 0) return { ok: false, path: null };
+    return { ok: true, path: path.resolve(result.filePaths[0]) };
+  });
+
   ipcMain.handle("workspace:removeDirectory", async (_event, dirPath) => {
     const current = settings.readSettings();
     const toRemove = typeof dirPath === "string" ? path.resolve(dirPath) : "";
@@ -391,7 +401,11 @@ app.whenReady().then(() => {
     };
   });
 
-  ipcMain.handle("ide:openProject", async (_event, ideId) => {
+  ipcMain.handle("ide:openProject", async (_event, payload) => {
+    // payload can be a plain ideId string (legacy) or { ideId, workspaceDir }
+    const ideId = typeof payload === "string" ? payload : payload?.ideId;
+    const workspaceDir = typeof payload === "object" && payload?.workspaceDir ? payload.workspaceDir : undefined;
+
     const available = await ide.listAvailableIdes();
     const byId = available.find((i) => i.id === ideId);
     const current = settings.readSettings();
@@ -404,7 +418,7 @@ app.whenReady().then(() => {
       throw new Error("No supported IDE found on PATH.");
     }
 
-    ide.launchIde(selected.command);
+    ide.launchIde(selected, workspaceDir);
     settings.writeSettings({ ...current, preferredIde: selected.id });
     return { ok: true, ideId: selected.id };
   });
@@ -514,7 +528,7 @@ app.whenReady().then(() => {
       Number.isFinite(Number(payload.rows)) && Number(payload.rows) > 0 ? Math.floor(Number(payload.rows)) : 30;
 
     const shell = terminal.resolveTerminalShell();
-    const cwd = terminal.resolveTerminalCwd(app.getPath("home"));
+    const cwd = (typeof payload.cwd === "string" && payload.cwd) ? payload.cwd : terminal.resolveTerminalCwd(app.getPath("home"));
     const env = terminal.buildTerminalEnv();
     let terminalSession;
     let launchWarning = "";
@@ -664,15 +678,31 @@ app.whenReady().then(() => {
     }
   });
 
+  ipcMain.handle("workspace:getSkills", async () => {
+    try {
+      return { ok: true, skills: skills.getAvailableSkills() };
+    } catch {
+      return { ok: false, skills: [] };
+    }
+  });
+
   ipcMain.handle("chat:streamStart", async (event, payload) => {
-    const { messages, effort, contextFiles, resumeSessionId: clientResumeSessionId } = chat.parseChatPayload(payload);
+    const { messages, effort, contextFiles, resumeSessionId: clientResumeSessionId, workspaceDirs: payloadWorkspaceDirs } = chat.parseChatPayload(payload);
     if (!Array.isArray(messages) || messages.length === 0) {
       throw new Error("Cannot send an empty chat.");
     }
 
+    // Expand the last user message if it's a skill/command slash invocation
+    const expandedMessages = messages.map((msg, i) => {
+      if (i !== messages.length - 1 || msg.role !== "user") return msg;
+      const expanded = skills.expandSlashCommand(msg.content);
+      return expanded ? { ...msg, content: expanded } : msg;
+    });
+
     const requestId = randomUUID();
     const current = settings.readSettings();
-    const workspaceDirs = workspace.getWorkspaceRoots(current);
+    // Use thread-specific dirs if provided, otherwise fall back to global workspace dirs
+    const workspaceDirs = payloadWorkspaceDirs.length > 0 ? payloadWorkspaceDirs : workspace.getWorkspaceRoots(current);
 
     if (current.authMode === settings.AUTH_MODES.API_KEY) {
       const apiKey = settings.decryptSecret(current.encryptedApiKey);
@@ -683,7 +713,7 @@ app.whenReady().then(() => {
       chat.startAnthropicPseudoStream({
         webContents: event.sender,
         requestId,
-        messages,
+        messages: expandedMessages,
         model: current.model,
         apiKey
       });
@@ -691,14 +721,17 @@ app.whenReady().then(() => {
     }
 
     const hasImageContext = contextFiles.some((file) => file.isImage);
-    // Prefer per-thread sessionId from renderer; fallback to global settings session
-    const resumeSessionId = hasImageContext ? "" : (clientResumeSessionId || current.claudeCliSessionId);
+    // Use client-provided resumeSessionId when payload is an object (renderer explicitly set it,
+    // even if empty string meaning "start fresh"). Only fall back to global session when payload
+    // was the legacy array format (no resumeSessionId field present).
+    const clientExplicitlyProvided = !Array.isArray(payload) && payload && typeof payload.resumeSessionId === "string";
+    const resumeSessionId = hasImageContext ? "" : (clientExplicitlyProvided ? clientResumeSessionId : current.claudeCliSessionId);
     const forcedSessionId = hasImageContext ? randomUUID() : "";
 
     void chat.startSDKStream({
       webContents: event.sender,
       requestId,
-      messages,
+      messages: expandedMessages,
       model: current.model,
       effort,
       contextFiles,

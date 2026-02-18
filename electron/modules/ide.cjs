@@ -1,30 +1,96 @@
+const fs = require("node:fs");
+const path = require("node:path");
 const { spawn } = require("node:child_process");
+const { nativeImage } = require("electron");
 
 const { isCommandAvailable, getWorkspaceDir } = require("./utils.cjs");
 
+// For macOS .app bundles, define the app name so we can locate the icon and optionally the CLI.
 const IDE_CANDIDATES = [
-  { id: "cursor", label: "Cursor", command: "cursor", icon: "cursor" },
-  { id: "vscode", label: "VS Code", command: "code", icon: "vscode" },
-  { id: "windsurf", label: "Windsurf", command: "windsurf", icon: "windsurf" },
-  { id: "zed", label: "Zed", command: "zed", icon: "zed" },
-  { id: "webstorm", label: "WebStorm", command: "webstorm", icon: "jetbrains" }
+  { id: "cursor", label: "Cursor", command: "cursor" },
+  { id: "vscode", label: "VS Code", command: "code" },
+  { id: "windsurf", label: "Windsurf", command: "windsurf" },
+  { id: "zed", label: "Zed", command: "zed" },
+  { id: "webstorm", label: "WebStorm", command: "webstorm" },
+  {
+    id: "antigravity",
+    label: "Antigravity",
+    // CLI lives inside the bundle; fall back to `open -a` if not found
+    macOsApp: "Antigravity",
+    bundleCliPath: "/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity"
+  }
 ];
+
+function getAppIconDataUrl(appName) {
+  try {
+    const icnsPath = `/Applications/${appName}.app/Contents/Resources/${appName}.icns`;
+    if (!fs.existsSync(icnsPath)) return null;
+    const img = nativeImage.createFromPath(icnsPath);
+    if (img.isEmpty()) return null;
+    // Resize to 32x32 for UI use
+    return img.resize({ width: 32, height: 32 }).toDataURL();
+  } catch {
+    return null;
+  }
+}
+
+async function isMacOsAppAvailable(appName) {
+  return fs.existsSync(`/Applications/${appName}.app`);
+}
 
 async function listAvailableIdes() {
   const available = [];
   for (const candidate of IDE_CANDIDATES) {
-    // eslint-disable-next-line no-await-in-loop
-    const ok = await isCommandAvailable(candidate.command);
+    let ok = false;
+
+    if (candidate.macOsApp) {
+      // eslint-disable-next-line no-await-in-loop
+      ok = await isMacOsAppAvailable(candidate.macOsApp);
+    } else {
+      // eslint-disable-next-line no-await-in-loop
+      ok = await isCommandAvailable(candidate.command);
+    }
+
     if (ok) {
-      available.push(candidate);
+      const entry = { id: candidate.id, label: candidate.label };
+      if (candidate.macOsApp) {
+        entry.iconDataUrl = getAppIconDataUrl(candidate.macOsApp);
+      }
+      available.push(entry);
     }
   }
   return available;
 }
 
-function launchIde(command) {
-  const WORKSPACE_DIR = getWorkspaceDir();
-  const child = spawn(command, [WORKSPACE_DIR], {
+function launchIde(candidate, workspaceDir) {
+  const WORKSPACE_DIR = workspaceDir || getWorkspaceDir();
+
+  // Resolve the original candidate definition to get macOsApp / bundleCliPath
+  const def = IDE_CANDIDATES.find((c) => c.id === candidate.id) || candidate;
+
+  if (def.bundleCliPath && fs.existsSync(def.bundleCliPath)) {
+    // Use the CLI inside the bundle if available
+    const child = spawn(def.bundleCliPath, [WORKSPACE_DIR], {
+      cwd: WORKSPACE_DIR,
+      stdio: "ignore",
+      detached: true
+    });
+    child.unref();
+    return;
+  }
+
+  if (def.macOsApp) {
+    // Fall back to `open -a AppName /path`
+    const child = spawn("open", ["-a", def.macOsApp, WORKSPACE_DIR], {
+      cwd: WORKSPACE_DIR,
+      stdio: "ignore",
+      detached: true
+    });
+    child.unref();
+    return;
+  }
+
+  const child = spawn(def.command || candidate.id, [WORKSPACE_DIR], {
     cwd: WORKSPACE_DIR,
     stdio: "ignore",
     detached: true

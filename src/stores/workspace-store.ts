@@ -52,7 +52,7 @@ type WorkspaceState = {
   onAddWorkspaceDir: () => Promise<void>;
   onRemoveWorkspaceDir: (rootPath: string) => Promise<void>;
   onCopyRelativePath: (relativePath: string) => void;
-  onOpenIde: (ideId: string) => Promise<void>;
+  onOpenIde: (ideId: string, workspaceDir?: string) => Promise<void>;
   activeEditorTab: EditorTab | null;
 };
 
@@ -389,10 +389,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
   },
 
-  onOpenIde: async (ideId) => {
+  onOpenIde: async (ideId, workspaceDir) => {
     const setStatus = useSettingsStore.getState().setStatus;
     try {
-      await window.desktop.ide.openProject(ideId);
+      await window.desktop.ide.openProject(workspaceDir ? { ideId, workspaceDir } : ideId);
       await Promise.all([get().refreshIdeInfo(), useSettingsStore.getState().refreshSettings()]);
       setStatus(`Opened workspace in ${ideId}.`);
     } catch (error) {

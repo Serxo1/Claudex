@@ -18,6 +18,21 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { ideChipLabel } from "@/lib/chat-utils";
+
+function IdeIcon({ id, iconDataUrl }: { id?: string; iconDataUrl?: string }) {
+  if (iconDataUrl) {
+    return (
+      <span className="inline-flex size-5 items-center justify-center rounded-md border border-border bg-muted">
+        <img alt={id} className="size-3.5 object-contain" src={iconDataUrl} />
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex size-5 items-center justify-center rounded-md border border-border bg-muted text-[10px] font-semibold">
+      {ideChipLabel(id)}
+    </span>
+  );
+}
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useGitStore } from "@/stores/git-store";
 import { useChatStore } from "@/stores/chat-store";
@@ -55,13 +70,24 @@ export function HeaderBar({
     const thread = s.threads.find((t) => t.id === s.activeThreadId) ?? s.threads[0] ?? null;
     return thread?.title ?? "New thread";
   });
-  const messageCount = useChatStore((s) => {
+
+  const threadWorkspaceDir = useChatStore((s) => {
     const thread = s.threads.find((t) => t.id === s.activeThreadId) ?? s.threads[0] ?? null;
-    return thread?.messages.length ?? 0;
+    return thread?.workspaceDirs[0] ?? "";
   });
-  const activeThreadSessionId = useChatStore((s) => {
+
+  const sessionTotal = useChatStore((s) => {
     const thread = s.threads.find((t) => t.id === s.activeThreadId) ?? s.threads[0] ?? null;
-    return thread?.sessionId ?? null;
+    return thread?.sessions.length ?? 0;
+  });
+
+  const sessionRunning = useChatStore((s) => {
+    const thread = s.threads.find((t) => t.id === s.activeThreadId) ?? s.threads[0] ?? null;
+    return (
+      thread?.sessions.filter(
+        (sess) => sess.status === "running" || sess.status === "awaiting_approval"
+      ).length ?? 0
+    );
   });
 
   return (
@@ -93,12 +119,12 @@ export function HeaderBar({
         ) : null}
         <h1 className="truncate text-sm font-semibold lg:text-base">{threadTitle}</h1>
         <span className="hidden text-sm text-muted-foreground lg:inline">
-          {messageCount} messages
+          {sessionTotal} {sessionTotal === 1 ? "sessão" : "sessões"}
         </span>
-        {activeThreadSessionId ? (
-          <span className="hidden items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-600 dark:text-emerald-400 lg:inline-flex">
-            <span className="size-1.5 rounded-full bg-emerald-500" />
-            Sessão activa
+        {sessionRunning > 0 ? (
+          <span className="hidden items-center gap-1 rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-[10px] text-blue-600 dark:text-blue-400 lg:inline-flex">
+            <span className="size-1.5 rounded-full bg-blue-500 animate-pulse" />
+            {sessionRunning} {sessionRunning === 1 ? "activa" : "activas"}
           </span>
         ) : null}
       </div>
@@ -112,9 +138,12 @@ export function HeaderBar({
               type="button"
               variant="outline"
             >
-              <span className="inline-flex size-5 items-center justify-center rounded-md border border-border bg-muted text-[10px] font-semibold">
-                {ideChipLabel(ideInfo.selectedId)}
-              </span>
+              <IdeIcon
+                id={ideInfo.selectedId}
+                iconDataUrl={
+                  ideInfo.available.find((i) => i.id === ideInfo.selectedId)?.iconDataUrl
+                }
+              />
               Open
               <ChevronDown className="size-3.5" />
             </Button>
@@ -136,10 +165,11 @@ export function HeaderBar({
               </DropdownMenuItem>
             ) : (
               ideInfo.available.map((ide) => (
-                <DropdownMenuItem key={ide.id} onSelect={() => void onOpenIde(ide.id)}>
-                  <span className="inline-flex size-5 items-center justify-center rounded-md border border-border bg-muted text-[10px] font-semibold">
-                    {ideChipLabel(ide.id)}
-                  </span>
+                <DropdownMenuItem
+                  key={ide.id}
+                  onSelect={() => void onOpenIde(ide.id, threadWorkspaceDir || undefined)}
+                >
+                  <IdeIcon id={ide.id} iconDataUrl={ide.iconDataUrl} />
                   <span>{ide.label}</span>
                   {ide.id === ideInfo.selectedId ? (
                     <span className="ml-auto text-xs text-muted-foreground">selected</span>
@@ -151,7 +181,7 @@ export function HeaderBar({
             <DropdownMenuItem onSelect={(event) => event.preventDefault()}>
               <FolderCode className="size-4" />
               <span className="truncate text-xs text-muted-foreground">
-                {workspacePath || "Workspace"}
+                {threadWorkspaceDir || workspacePath || "Workspace"}
               </span>
             </DropdownMenuItem>
           </DropdownMenuContent>

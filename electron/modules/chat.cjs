@@ -4,6 +4,7 @@ const { spawn } = require("node:child_process");
 const { collectContextDirs, normalizeContextFiles } = require("./workspace.cjs");
 const { logError } = require("./logger.cjs");
 const { ANTHROPIC_API_URL, ANTHROPIC_API_VERSION, MAX_TOKENS_DEFAULT, CONTEXT_WINDOW_DEFAULT } = require("./constants.cjs");
+const { expandSlashCommand } = require("./skills.cjs");
 
 const activeStreamRequests = new Map();
 
@@ -47,14 +48,16 @@ async function startSDKStream({
   onSessionId,
   onSessionReset
 }) {
-  const message = getLatestUserPrompt(messages);
-  if (!message) {
+  const rawMessage = getLatestUserPrompt(messages);
+  if (!rawMessage) {
     sendStreamEvent(webContents, {
       requestId, type: "error",
       error: "No message to send.", provider: "claude-cli"
     });
     return;
   }
+  // Expand skill/command slash prompts before sending to the SDK
+  const message = expandSlashCommand(rawMessage) ?? rawMessage;
 
   const abortController = new AbortController();
   const entry = {
@@ -106,6 +109,11 @@ async function startSDKStream({
   let permissionMode = "";
   let sessionId = resumeSessionId || forcedSessionId || "";
   let sessionCostUsd = null;
+  // Track per-call context window usage from message_start (NOT cumulative result.usage)
+  let latestCallInputTokens = 0;
+  let latestCallCacheReadTokens = 0;
+  let latestCallCacheCreationTokens = 0;
+  let latestCallOutputTokens = 0;
 
   const { query } = await getSdk();
 
@@ -170,6 +178,21 @@ async function startSDKStream({
 
       if (msg.type === "stream_event") {
         const ev = msg.event;
+
+        // Capture per-call input tokens from message_start (resets each API call)
+        if (ev?.type === "message_start" && ev.message?.usage) {
+          const u = ev.message.usage;
+          latestCallInputTokens = Number(u.input_tokens) || 0;
+          latestCallCacheReadTokens = Number(u.cache_read_input_tokens) || 0;
+          latestCallCacheCreationTokens = Number(u.cache_creation_input_tokens) || 0;
+          latestCallOutputTokens = 0; // reset for this call
+        }
+
+        // Capture per-call output tokens from message_delta
+        if (ev?.type === "message_delta" && ev.usage) {
+          latestCallOutputTokens = Number(ev.usage.output_tokens) || 0;
+        }
+
         if (
           ev?.type === "content_block_delta" &&
           ev.delta?.type === "text_delta" &&
@@ -227,16 +250,16 @@ async function startSDKStream({
           finalText = msg.result.trim();
         }
 
-        // Token usage
-        const usage = msg.usage || {};
+        // Token usage — use per-call values from message_start/message_delta stream events.
+        // msg.usage is CUMULATIVE across all API calls in the session and would give >100%.
         const modelUsage = msg.modelUsage || {};
         const primaryModel = Object.values(modelUsage)[0];
         const maxTokens = primaryModel && Number.isFinite(primaryModel.contextWindow)
           ? Number(primaryModel.contextWindow) : CONTEXT_WINDOW_DEFAULT;
-        const inputTokens = Number(usage.input_tokens) || 0;
-        const outputTokens = Number(usage.output_tokens) || 0;
-        const cacheReadInputTokens = Number(usage.cache_read_input_tokens) || 0;
-        const cacheCreationInputTokens = Number(usage.cache_creation_input_tokens) || 0;
+        const inputTokens = latestCallInputTokens;
+        const outputTokens = latestCallOutputTokens;
+        const cacheReadInputTokens = latestCallCacheReadTokens;
+        const cacheCreationInputTokens = latestCallCacheCreationTokens;
         const usedTokens = inputTokens + outputTokens + cacheReadInputTokens + cacheCreationInputTokens;
         const percent = maxTokens > 0
           ? Math.max(0, Math.min(100, Math.round((usedTokens / maxTokens) * 100))) : 0;
@@ -550,13 +573,14 @@ function runClaudeCli(messages, model, resumeSessionId, effort, contextFiles = [
 // ---------------------------------------------------------------------------
 
 function parseChatPayload(payload) {
-  if (Array.isArray(payload)) return { messages: payload, effort: "", contextFiles: [], resumeSessionId: "" };
-  if (!payload || typeof payload !== "object") return { messages: [], effort: "", contextFiles: [], resumeSessionId: "" };
+  if (Array.isArray(payload)) return { messages: payload, effort: "", contextFiles: [], resumeSessionId: "", workspaceDirs: [] };
+  if (!payload || typeof payload !== "object") return { messages: [], effort: "", contextFiles: [], resumeSessionId: "", workspaceDirs: [] };
   return {
     messages: Array.isArray(payload.messages) ? payload.messages : [],
     effort: typeof payload.effort === "string" ? payload.effort.trim() : "",
     contextFiles: normalizeContextFiles(payload.contextFiles),
-    resumeSessionId: typeof payload.resumeSessionId === "string" ? payload.resumeSessionId.trim() : ""
+    resumeSessionId: typeof payload.resumeSessionId === "string" ? payload.resumeSessionId.trim() : "",
+    workspaceDirs: Array.isArray(payload.workspaceDirs) ? payload.workspaceDirs.filter((d) => typeof d === "string") : []
   };
 }
 

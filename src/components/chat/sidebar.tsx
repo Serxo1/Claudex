@@ -1,52 +1,55 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type ComponentProps,
-  type ReactNode
-} from "react";
+import { type ReactNode } from "react";
 import logo from "@/assets/logo.png";
 import {
-  Bot,
-  FileText,
-  FolderMinus,
+  FolderOpen,
   FolderPlus,
   Globe,
+  ListFilter,
   PanelLeftClose,
-  Plus,
-  RefreshCcw,
-  Workflow,
-  X
+  Trash2,
+  Workflow
 } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
-import { FileTree, FileTreeFile, FileTreeFolder } from "@/components/ai-elements/file-tree";
-import {
-  Snippet,
-  SnippetAddon,
-  SnippetCopyButton,
-  SnippetInput,
-  SnippetText
-} from "@/components/ai-elements/snippet";
 import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { WorkspaceFileTreeNode } from "@/lib/chat-types";
-import { useWorkspaceStore } from "@/stores/workspace-store";
-
-const sidebarNav: Array<{ id: "chat" | "skills" | "preview"; label: string; icon: LucideIcon }> = [
-  { id: "chat", label: "Chat", icon: Bot },
-  { id: "skills", label: "Skills", icon: Workflow },
-  { id: "preview", label: "Preview", icon: Globe }
-];
+import type { AgentSession, Thread } from "@/lib/chat-types";
+import { useChatStore } from "@/stores/chat-store";
 
 export type SidebarProps = {
   isOpen: boolean;
   onToggle: () => void;
-  activePage: "chat" | "preview";
-  onSelectPage: (page: "chat" | "preview") => void;
-  settingsMenu: React.ReactNode;
+  activePage: "chat" | "preview" | "skills";
+  onSelectPage: (page: "chat" | "preview" | "skills") => void;
+  settingsMenu: ReactNode;
 };
+
+function timeAgo(timestamp: number): string {
+  const diff = Date.now() - timestamp;
+  const minutes = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+  if (minutes < 1) return "agora";
+  if (hours < 1) return `${minutes}m`;
+  if (days < 1) return `${hours}h`;
+  return `${days}d`;
+}
+
+function sessionStatusClass(status: AgentSession["status"]): string {
+  if (status === "running") return "text-blue-500";
+  if (status === "awaiting_approval") return "text-yellow-500";
+  if (status === "error") return "text-destructive/70";
+  return "";
+}
+
+function threadStatusDot(status: Thread["status"]) {
+  if (status === "needs_attention")
+    return <span className="inline-flex size-1.5 shrink-0 rounded-full bg-red-500 animate-pulse" />;
+  if (status === "running")
+    return (
+      <span className="inline-flex size-1.5 shrink-0 rounded-full bg-blue-500 animate-pulse" />
+    );
+  return null;
+}
 
 export function Sidebar({
   isOpen,
@@ -55,106 +58,24 @@ export function Sidebar({
   onSelectPage,
   settingsMenu
 }: SidebarProps) {
-  const fileTrees = useWorkspaceStore((s) => s.fileTrees);
-  const primaryRootPath = useWorkspaceStore((s) => s.workspace?.path || "");
-  const selectedTreePath = useWorkspaceStore((s) => s.selectedTreePath);
-  const setSelectedTreePath = useWorkspaceStore((s) => s.setSelectedTreePath);
-  const expandedFilePaths = useWorkspaceStore((s) => s.expandedFilePaths);
-  const setExpandedFilePaths = useWorkspaceStore((s) => s.setExpandedFilePaths);
-  const onAddSelectedFileToContext = useWorkspaceStore((s) => s.onAddSelectedTreeFileToContext);
-  const onAddTreePathToContext = useWorkspaceStore((s) => s.onAddTreePathToContext);
-  const onRemoveTreePathFromContext = useWorkspaceStore((s) => s.onRemoveTreePathFromContext);
-  const onOpenTreePathInEditor = useWorkspaceStore((s) => s.onOpenEditorFile);
-  const onCopyRelativePath = useWorkspaceStore((s) => s.onCopyRelativePath);
-  const onAddWorkspaceDir = useWorkspaceStore((s) => s.onAddWorkspaceDir);
-  const onRemoveWorkspaceDir = useWorkspaceStore((s) => s.onRemoveWorkspaceDir);
-  const refreshWorkspaceFileTree = useWorkspaceStore((s) => s.refreshWorkspaceFileTree);
+  const threads = useChatStore((s) => s.threads);
+  const activeThreadId = useChatStore((s) => s.activeThreadId);
+  const setActiveThreadId = useChatStore((s) => s.setActiveThreadId);
+  const createThread = useChatStore((s) => s.createThread);
+  const deleteThread = useChatStore((s) => s.deleteThread);
 
-  const [contextMenu, setContextMenu] = useState<{
-    x: number;
-    y: number;
-    treePath: string;
-    relativePath: string;
-  } | null>(null);
+  const setActiveSessionId = useChatStore((s) => s.setActiveSessionId);
 
-  useEffect(() => {
-    if (!contextMenu) return;
-    const close = () => setContextMenu(null);
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
-    window.addEventListener("click", close);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("click", close);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [contextMenu]);
-
-  const renderTreeNode = useCallback((node: WorkspaceFileTreeNode, rootPath: string): ReactNode => {
-    const fullPath = `${rootPath}::${node.path}`;
-    if (node.type === "folder") {
-      return (
-        <FileTreeFolder key={fullPath} name={node.name} path={fullPath}>
-          {(node.children || []).map((child) => renderTreeNode(child, rootPath))}
-        </FileTreeFolder>
-      );
-    }
-    return (
-      <FileTreeFile
-        key={fullPath}
-        name={node.name}
-        onMouseDown={(event) => {
-          if (event.button === 2) {
-            event.preventDefault();
-            event.stopPropagation();
-          }
-        }}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          setContextMenu({
-            x: event.clientX,
-            y: event.clientY,
-            treePath: fullPath,
-            relativePath: node.path
-          });
-        }}
-        path={fullPath}
-      />
-    );
-  }, []);
-
-  const removableRoots = useMemo(
-    () => fileTrees.filter((root) => root.rootPath !== primaryRootPath),
-    [fileTrees, primaryRootPath]
-  );
-
-  const renderedFileTree = useMemo(
-    () =>
-      fileTrees.map((root) => (
-        <FileTreeFolder
-          key={`root::${root.rootPath}`}
-          name={root.rootName}
-          path={`root::${root.rootPath}`}
-        >
-          {root.nodes.map((node) => renderTreeNode(node, root.rootPath))}
-        </FileTreeFolder>
-      )),
-    [fileTrees, renderTreeNode]
-  );
+  const sortedThreads = [...threads].sort((a, b) => b.updatedAt - a.updatedAt);
 
   if (!isOpen) return null;
 
-  const quickSnippet = selectedTreePath.includes("::")
-    ? selectedTreePath.replace("::", "/")
-    : primaryRootPath;
-
   return (
-    <aside className="absolute inset-y-0 left-0 z-40 flex h-full w-[320px] shrink-0 flex-col border-r border-border/70 bg-background lg:static lg:z-auto">
-      <div className="flex items-center justify-between px-5 pt-4">
+    <aside className="absolute inset-y-0 left-0 z-40 flex h-full w-[280px] shrink-0 flex-col border-r border-border/70 bg-background lg:static lg:z-auto">
+      {/* App header */}
+      <div className="flex items-center justify-between px-4 pt-4 pb-3">
         <div className="flex items-center gap-2">
-          <img alt="Logo" className="size-6 rounded-lg" src={logo} />
+          <img alt="Logo" className="size-5 rounded-md" src={logo} />
           <span className="text-sm font-semibold tracking-tight text-foreground">Claudex</span>
         </div>
         <Button
@@ -167,183 +88,166 @@ export function Sidebar({
         </Button>
       </div>
 
-      <nav className="mt-4 space-y-1 px-3">
-        {sidebarNav.map((item) => {
-          if (item.id === "skills") {
-            const Icon = item.icon;
-            return (
-              <button
-                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition hover:bg-foreground/5 hover:text-foreground"
-                key={item.id}
-                type="button"
-              >
-                <Icon className="size-4" />
-                <span>{item.label}</span>
-              </button>
-            );
-          }
-          const Icon = item.icon;
-          return (
-            <button
-              className={cn(
-                "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition",
-                activePage === item.id
-                  ? "bg-foreground/10 text-foreground"
-                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
-              )}
-              key={item.id}
-              onClick={() => onSelectPage(item.id as "chat" | "preview")}
-              type="button"
-            >
-              <Icon className="size-4" />
-              <span>{item.label}</span>
-            </button>
-          );
-        })}
-      </nav>
+      {/* New Thread button */}
+      <div className="px-2 pb-1">
+        <button
+          className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm font-medium text-foreground/80 transition hover:bg-foreground/5 hover:text-foreground"
+          onClick={() => void createThread()}
+          type="button"
+        >
+          <FolderPlus className="size-4 shrink-0 text-muted-foreground/70" />
+          <span>New Thread</span>
+        </button>
+      </div>
 
-      <div className="mt-6 flex min-h-0 flex-1 flex-col px-4">
-        <div className="mb-2 flex items-center justify-between text-xs font-medium text-muted-foreground/80 uppercase tracking-[0.08em]">
-          <span>Files</span>
-          <div className="flex items-center gap-1">
+      {/* Nav pages */}
+      <div className="space-y-0.5 px-2">
+        <button
+          className={cn(
+            "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition",
+            activePage === "skills"
+              ? "bg-foreground/10 text-foreground"
+              : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+          )}
+          onClick={() => onSelectPage("skills")}
+          type="button"
+        >
+          <Workflow className="size-4 shrink-0" />
+          <span>Skills</span>
+        </button>
+        <button
+          className={cn(
+            "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition",
+            activePage === "preview"
+              ? "bg-foreground/10 text-foreground"
+              : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+          )}
+          onClick={() => onSelectPage(activePage === "preview" ? "chat" : "preview")}
+          type="button"
+        >
+          <Globe className="size-4 shrink-0" />
+          <span>Preview</span>
+        </button>
+      </div>
+
+      <div className="mx-4 my-3 border-t border-border/40" />
+
+      {/* Threads section */}
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex items-center justify-between px-4 pb-2">
+          <span className="text-xs font-medium text-muted-foreground/70 uppercase tracking-[0.08em]">
+            Threads
+          </span>
+          <div className="flex items-center gap-0.5">
             <Button
-              className="size-6"
-              onClick={() => void onAddWorkspaceDir()}
+              className="size-6 text-muted-foreground hover:text-foreground"
+              onClick={createThread}
               size="icon-xs"
+              title="Novo projecto"
               type="button"
               variant="ghost"
             >
               <FolderPlus className="size-3.5" />
             </Button>
             <Button
-              className="size-6"
-              onClick={() => void refreshWorkspaceFileTree()}
+              className="size-6 text-muted-foreground hover:text-foreground"
               size="icon-xs"
+              title="Filtrar"
               type="button"
               variant="ghost"
             >
-              <RefreshCcw className="size-3.5" />
-            </Button>
-            <Button
-              className="size-6"
-              onClick={() => void onAddSelectedFileToContext()}
-              size="icon-xs"
-              type="button"
-              variant="ghost"
-            >
-              <Plus className="size-3.5" />
+              <ListFilter className="size-3.5" />
             </Button>
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-border/70 bg-background p-2">
-          <div className="mb-2 space-y-1">
-            {removableRoots.map((root) => (
-              <div
-                className="flex items-center justify-between rounded border border-border bg-muted/30 px-2 py-1"
-                key={`root-pill-${root.rootPath}`}
-              >
-                <span className="truncate text-[11px] text-foreground/80">{root.rootName}</span>
-                <button
-                  className="inline-flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-                  onClick={() => void onRemoveWorkspaceDir(root.rootPath)}
-                  title="Remove folder from workspace"
-                  type="button"
-                >
-                  <FolderMinus className="size-3.5" />
-                </button>
-              </div>
-            ))}
-          </div>
+        <div className="min-h-0 flex-1 overflow-auto px-2 pb-2">
+          {sortedThreads.length === 0 ? (
+            <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+              Sem projectos. Clica em <FolderPlus className="inline size-3" /> para criar um.
+            </p>
+          ) : (
+            sortedThreads.map((thread) => {
+              const isActive = thread.id === activeThreadId;
 
-          <FileTree
-            className="border-0 bg-transparent text-xs"
-            expanded={expandedFilePaths}
-            onExpandedChange={setExpandedFilePaths}
-            onSelect={
-              ((value: string) => {
-                setSelectedTreePath(value);
-                void useWorkspaceStore.getState().onOpenEditorFile(value);
-              }) as unknown as ComponentProps<typeof FileTree>["onSelect"]
-            }
-            selectedPath={selectedTreePath}
-          >
-            {renderedFileTree}
-          </FileTree>
-        </div>
+              return (
+                <div key={thread.id} className="mb-0.5">
+                  {/* Project row */}
+                  <div className="group flex items-center gap-1">
+                    <button
+                      className={cn(
+                        "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left transition",
+                        isActive
+                          ? "text-foreground"
+                          : "text-foreground/80 hover:text-foreground hover:bg-foreground/5"
+                      )}
+                      onClick={() => setActiveThreadId(thread.id)}
+                      type="button"
+                    >
+                      <FolderOpen className="size-3.5 shrink-0 text-muted-foreground/60" />
+                      <span className="flex-1 truncate text-sm font-medium leading-tight">
+                        {thread.title === "New thread" ? (
+                          <span className="italic text-muted-foreground">Novo projecto</span>
+                        ) : (
+                          thread.title
+                        )}
+                      </span>
+                      {thread.sessions.length === 0 && (
+                        <span className="shrink-0 text-[10px] text-muted-foreground/50">New</span>
+                      )}
+                      {threadStatusDot(thread.status)}
+                    </button>
+                    <button
+                      className="invisible size-6 shrink-0 inline-flex items-center justify-center rounded text-muted-foreground/50 transition hover:bg-destructive/10 hover:text-destructive group-hover:visible"
+                      onClick={() => deleteThread(thread.id)}
+                      title="Apagar projecto"
+                      type="button"
+                    >
+                      <Trash2 className="size-3" />
+                    </button>
+                  </div>
 
-        <div className="mt-3 space-y-2">
-          <p className="text-[11px] text-muted-foreground uppercase tracking-[0.08em]">
-            Quick snippet
-          </p>
-          <Snippet code={quickSnippet}>
-            <SnippetAddon>
-              <SnippetText>
-                <FileText className="size-3.5" />
-              </SnippetText>
-            </SnippetAddon>
-            <SnippetInput />
-            <SnippetCopyButton />
-          </Snippet>
+                  {/* Session list */}
+                  {thread.sessions.length > 0 && (
+                    <div className="ml-3.5 border-l border-border/40 pl-2.5 mt-0.5 mb-1 space-y-0.5">
+                      {[...thread.sessions]
+                        .sort((a, b) => b.updatedAt - a.updatedAt)
+                        .map((session) => (
+                          <button
+                            key={session.id}
+                            className={cn(
+                              "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition",
+                              isActive
+                                ? "text-foreground/90 hover:bg-foreground/5"
+                                : "text-muted-foreground hover:text-foreground hover:bg-foreground/5",
+                              sessionStatusClass(session.status)
+                            )}
+                            onClick={() => {
+                              setActiveThreadId(thread.id);
+                              setActiveSessionId(session.id);
+                            }}
+                            type="button"
+                          >
+                            <span className="flex-1 truncate leading-snug">{session.title}</span>
+                            <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/50">
+                              {timeAgo(session.updatedAt)}
+                            </span>
+                          </button>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
 
-      <div className="mt-auto flex items-center gap-1 border-t border-border/60 px-3 py-3">
+      {/* Footer */}
+      <div className="flex items-center gap-1 border-t border-border/60 px-3 py-3">
         <div className="flex-1">{settingsMenu}</div>
         <AnimatedThemeToggler className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent hover:text-foreground [&>svg]:size-4" />
       </div>
-
-      {contextMenu ? (
-        <div
-          className="fixed z-[100] min-w-40 rounded-md border border-border/70 bg-background p-1 shadow-xl"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-        >
-          <button
-            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground/90 hover:bg-foreground/10"
-            onClick={() => {
-              void onOpenTreePathInEditor(contextMenu.treePath);
-              setContextMenu(null);
-            }}
-            type="button"
-          >
-            <FileText className="size-3.5" />
-            Open in editor
-          </button>
-          <button
-            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground/90 hover:bg-foreground/10"
-            onClick={() => {
-              onCopyRelativePath(contextMenu.relativePath);
-              setContextMenu(null);
-            }}
-            type="button"
-          >
-            <FileText className="size-3.5" />
-            Copy relative path
-          </button>
-          <button
-            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground/90 hover:bg-foreground/10"
-            onClick={() => {
-              void onAddTreePathToContext(contextMenu.treePath);
-              setContextMenu(null);
-            }}
-            type="button"
-          >
-            <Plus className="size-3.5" />
-            Add to context
-          </button>
-          <button
-            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground/90 hover:bg-foreground/10"
-            onClick={() => {
-              void onRemoveTreePathFromContext(contextMenu.treePath);
-              setContextMenu(null);
-            }}
-            type="button"
-          >
-            <X className="size-3.5" />
-            Remove from context
-          </button>
-        </div>
-      ) : null}
     </aside>
   );
 }

@@ -25,7 +25,19 @@ npm run typecheck
 
 # Executar app empacotado
 npm start
+
+# Testes
+npm test              # vitest run (uma vez)
+npm run test:watch    # vitest em modo watch
+
+# Lint e formatação
+npm run lint          # ESLint em src/
+npm run lint:fix      # ESLint com auto-fix
+npm run format        # Prettier em src/ e electron/
+npm run format:check  # Verificar formatação sem alterar
 ```
+
+> **Pre-commit hook**: `lint-staged` roda automaticamente Prettier + ESLint em arquivos `src/**/*.{ts,tsx}` e Prettier em `electron/**/*.cjs` a cada commit.
 
 ## Arquitetura
 
@@ -42,9 +54,22 @@ npm start
 
 ### Renderer (React + Vite)
 - **src/App.tsx**: Ponto de entrada simples renderizando `<ChatShell />`
-- **src/components/chat/chat-shell.tsx**: Container principal da UI de chat
+- **src/components/chat/chat-shell.tsx**: Container principal da UI de chat — orquestra stores, hooks, terminal, editor Monaco e painel de preview
 - **src/components/ui/**: Componentes shadcn/ui (Tailwind v4 com sistema de design "new-york")
 - **src/components/ai-elements/**: Componentes específicos para UI de IA (artifacts, code-block, terminal, tool, etc.)
+
+### State Management (Zustand)
+- **src/stores/settings-store.ts**: Configurações do app e autenticação
+- **src/stores/chat-store.ts**: Threads de chat, streaming, aprovações de ferramentas e perguntas pendentes
+- **src/stores/workspace-store.ts**: Árvore de arquivos, editor tabs (Monaco) e informações de IDEs
+- **src/stores/git-store.ts**: Resumo Git e commits recentes
+- **src/stores/permissions-store.ts**: Controle de permissões de ferramentas do Claude CLI
+
+### Hooks
+- **src/hooks/use-chat-stream.ts**: Lógica de envio de mensagens e consumo do stream de eventos IPC
+- **src/hooks/use-terminal.ts**: Gerenciamento de sessão PTY e XTerm.js
+- **src/hooks/use-preview.ts**: Navegação do Web Preview embutido
+- **src/hooks/use-workspace.ts**, **use-git.ts**, **use-settings.ts**, **use-threads.ts**: Helpers de domínio específico
 
 ### Comunicação IPC
 O renderer comunica com o processo principal via handlers expostos em `window.desktop`:
@@ -103,11 +128,15 @@ Prioriza `node-pty` para sessões PTY reais, fallback para pipes stdio se indisp
 - **Vite 7**: Build tool e dev server
 - **TypeScript 5.9**: Type safety
 - **Tailwind CSS 4**: Styling (com plugin Vite)
+- **Zustand 5**: State management global
 - **node-pty**: Terminal PTY (opcional, fallback para stdio pipes)
+- **Monaco Editor**: Editor de código embutido no painel direito
 - **AI SDK**: `@ai-sdk/react` e `ai` para chat patterns
 - **XTerm.js**: Emulador de terminal
 - **Shiki**: Syntax highlighting
 - **Streamdown**: Markdown rendering com suporte a código/matemática
+- **XyFlow**: Renderização de grafos/fluxogramas nos ai-elements
+- **Vitest + Testing Library**: Testes unitários/integração
 
 ## Notas de Desenvolvimento
 

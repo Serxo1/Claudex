@@ -36,6 +36,7 @@ export interface ChatRequestPayload {
   effort?: string;
   contextFiles?: ContextFileRef[];
   resumeSessionId?: string;
+  workspaceDirs?: string[];
 }
 
 export interface ChatSendResult {
@@ -230,8 +231,9 @@ export interface ContextFileRef {
 export interface IdeCandidate {
   id: string;
   label: string;
-  command: string;
-  icon: string;
+  command?: string;
+  icon?: string;
+  iconDataUrl?: string;
 }
 
 export interface IdeInfo {
@@ -282,13 +284,71 @@ export interface TerminalRunResult {
   timedOut: boolean;
 }
 
+export type ThreadContextUsage = {
+  usedTokens: number;
+  maxTokens: number;
+  percent: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+};
+
+export type PendingApproval = {
+  approvalId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+};
+
+export type PendingQuestion = {
+  approvalId: string;
+  questions: Array<{
+    question: string;
+    header: string;
+    options: Array<{ label: string; description: string }>;
+    multiSelect: boolean;
+  }>;
+};
+
+export type AgentSession = {
+  id: string;
+  threadId: string;
+  title: string;
+  messages: Array<ChatMessage & { attachments?: ContextAttachment[] }>;
+  status: "idle" | "running" | "awaiting_approval" | "done" | "error";
+  // Volatile — cleared on load from localStorage
+  requestId?: string;
+  pendingApproval?: PendingApproval | null;
+  pendingQuestion?: PendingQuestion | null;
+  isThinking?: boolean;
+  runningStartedAt?: number;
+  // Persisted
+  sessionId?: string;
+  contextUsage?: ThreadContextUsage | null;
+  accumulatedCostUsd?: number;
+  sessionCostUsd?: number | null;
+  limitsWarning?: {
+    level: "info" | "warning";
+    message: string;
+    fiveHourPercent: number | null;
+    weeklyPercent: number | null;
+  } | null;
+  permissionMode?: PermissionMode;
+  toolTimeline: ToolTimelineItem[];
+  reasoningText: string;
+  compactCount: number;
+  permissionDenials: string[];
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type Thread = {
   id: string;
   title: string;
   updatedAt: number;
-  messages: Array<ChatMessage & { attachments?: ContextAttachment[] }>;
-  accumulatedCostUsd?: number;
-  sessionId?: string;
+  workspaceDirs: string[];
+  sessions: AgentSession[];
+  status: "idle" | "running" | "needs_attention" | "done";
 };
 
 export type ContextAttachment = ContextFileRef;
@@ -350,4 +410,14 @@ export const TERMINAL_REQUIRED_SLASH_COMMANDS = new Set([
   "release-notes"
 ]);
 
-export const THREADS_STORAGE_KEY = "claude-desktop-threads-v1";
+export const THREADS_STORAGE_KEY = "claude-desktop-threads-v2";
+
+// Derive thread status from its sessions
+export function deriveThreadStatus(sessions: AgentSession[]): Thread["status"] {
+  if (sessions.length === 0) return "idle";
+  if (sessions.some((s) => s.status === "awaiting_approval")) return "needs_attention";
+  if (sessions.some((s) => s.status === "running")) return "running";
+  if (sessions.every((s) => s.status === "done" || s.status === "error" || s.status === "idle"))
+    return sessions.some((s) => s.status === "done" || s.status === "error") ? "done" : "idle";
+  return "idle";
+}

@@ -17,7 +17,7 @@ export interface UseTerminalReturn {
   ) => void;
 }
 
-export function useTerminal(setStatus: (value: string) => void): UseTerminalReturn {
+export function useTerminal(setStatus: (value: string) => void, cwd?: string): UseTerminalReturn {
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalShellLabel, setTerminalShellLabel] = useState("");
   const [latestTerminalError, setLatestTerminalError] = useState("");
@@ -112,7 +112,8 @@ export function useTerminal(setStatus: (value: string) => void): UseTerminalRetu
       try {
         const session = await window.desktop.terminal.createSession({
           cols: term.cols,
-          rows: term.rows
+          rows: term.rows,
+          ...(cwd ? { cwd } : {})
         });
         terminalSessionIdRef.current = session.sessionId;
         setTerminalShellLabel(session.shell || "");
@@ -137,7 +138,7 @@ export function useTerminal(setStatus: (value: string) => void): UseTerminalRetu
       fitAddonRef.current = null;
       terminalBufferRef.current = "";
     };
-  }, [terminalOpen]);
+  }, [terminalOpen, cwd]);
 
   const onOpenExternalTerminal = useCallback(async () => {
     try {

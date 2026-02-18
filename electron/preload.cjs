@@ -18,12 +18,14 @@ contextBridge.exposeInMainWorld("desktop", {
     getFileTree: (payload) => ipcRenderer.invoke("workspace:getFileTree", payload),
     getFileTrees: (payload) => ipcRenderer.invoke("workspace:getFileTrees", payload),
     addDirectory: () => ipcRenderer.invoke("workspace:addDirectory"),
+    pickDirectory: () => ipcRenderer.invoke("workspace:pickDirectory"),
     removeDirectory: (dirPath) => ipcRenderer.invoke("workspace:removeDirectory", dirPath),
     pickContextFile: () => ipcRenderer.invoke("workspace:pickContextFile"),
     resolveContextFile: (relativePath) => ipcRenderer.invoke("workspace:resolveContextFile", relativePath),
     readFile: (filePath) => ipcRenderer.invoke("workspace:readFile", filePath),
     writeFile: (payload) => ipcRenderer.invoke("workspace:writeFile", payload),
-    savePastedImage: (payload) => ipcRenderer.invoke("workspace:savePastedImage", payload)
+    savePastedImage: (payload) => ipcRenderer.invoke("workspace:savePastedImage", payload),
+    getSkills: () => ipcRenderer.invoke("workspace:getSkills")
   },
   ide: {
     getInfo: () => ipcRenderer.invoke("ide:getInfo"),

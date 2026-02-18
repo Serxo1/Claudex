@@ -47,6 +47,7 @@ declare global {
           maxEntries?: number;
         }) => Promise<WorkspaceRootTree[]>;
         addDirectory: () => Promise<{ ok: boolean; path?: string; dirs: string[] }>;
+        pickDirectory: () => Promise<{ ok: boolean; path: string | null }>;
         removeDirectory: (dirPath: string) => Promise<{ ok: boolean; dirs: string[] }>;
         pickContextFile: () => Promise<PickContextFileResult>;
         resolveContextFile: (relativePath: string) => Promise<PickContextFileResult>;
@@ -59,10 +60,21 @@ declare global {
           dataUrl: string;
           filename?: string;
         }) => Promise<SavePastedImageResult>;
+        getSkills: () => Promise<{
+          ok: boolean;
+          skills: Array<{
+            name: string;
+            description: string;
+            type: "command" | "skill";
+            body: string;
+          }>;
+        }>;
       };
       ide: {
         getInfo: () => Promise<IdeInfo>;
-        openProject: (ideId: string) => Promise<{ ok: boolean; ideId: string }>;
+        openProject: (
+          payload: string | { ideId: string; workspaceDir?: string }
+        ) => Promise<{ ok: boolean; ideId: string }>;
       };
       git: {
         getSummary: () => Promise<GitSummary>;
@@ -80,6 +92,7 @@ declare global {
         createSession: (payload?: {
           cols?: number;
           rows?: number;
+          cwd?: string;
         }) => Promise<{ sessionId: string; cwd: string; shell: string }>;
         write: (payload: { sessionId: string; data: string }) => Promise<{ ok: boolean }>;
         resize: (payload: {

@@ -1,29 +1,15 @@
 import { create } from "zustand";
 import type {
+  AgentSession,
   ChatMessage,
   ChatStreamEvent,
   ContextAttachment,
-  PermissionMode,
+  PendingApproval,
+  PendingQuestion,
   Thread,
   ToolTimelineItem
 } from "@/lib/chat-types";
-
-export type PendingApproval = {
-  approvalId: string;
-  toolName: string;
-  input: Record<string, unknown>;
-};
-
-export type PendingQuestion = {
-  approvalId: string;
-  questions: Array<{
-    question: string;
-    header: string;
-    options: Array<{ label: string; description: string }>;
-    multiSelect: boolean;
-  }>;
-};
-import { FALLBACK_SLASH_COMMANDS, THREADS_STORAGE_KEY } from "@/lib/chat-types";
+import { FALLBACK_SLASH_COMMANDS, THREADS_STORAGE_KEY, deriveThreadStatus } from "@/lib/chat-types";
 import {
   appendReasoningLine,
   isOpusModel,
@@ -37,82 +23,21 @@ import { useGitStore } from "@/stores/git-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { usePermissionsStore } from "@/stores/permissions-store";
 
+// ---------------------------------------------------------------------------
+// Module-level stream tracker (not reactive — just for routing events)
+// ---------------------------------------------------------------------------
+const _activeStreams = new Map<string, { threadId: string; sessionId: string }>();
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 function makeMessage(
   role: "user" | "assistant",
   content: string,
   attachments?: ContextAttachment[]
 ): ChatMessage & { attachments?: ContextAttachment[] } {
   return { id: crypto.randomUUID(), role, content, attachments };
-}
-
-function makeDefaultThread(): Thread {
-  return {
-    id: crypto.randomUUID(),
-    title: "New thread",
-    updatedAt: Date.now(),
-    messages: [
-      makeMessage("assistant", "Ready. Describe what you want to build and I will start coding.")
-    ]
-  };
-}
-
-function safeLoadThreads(): Thread[] {
-  try {
-    const raw = localStorage.getItem(THREADS_STORAGE_KEY);
-    if (!raw) return [makeDefaultThread()];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [makeDefaultThread()];
-    const threads = parsed
-      .filter(
-        (thread: Record<string, unknown>) =>
-          thread && typeof thread.id === "string" && Array.isArray(thread.messages)
-      )
-      .map((thread: Record<string, unknown>) => ({
-        id: thread.id as string,
-        title:
-          typeof thread.title === "string" && (thread.title as string).trim()
-            ? (thread.title as string)
-            : "New thread",
-        updatedAt: typeof thread.updatedAt === "number" ? (thread.updatedAt as number) : Date.now(),
-        accumulatedCostUsd:
-          typeof thread.accumulatedCostUsd === "number"
-            ? (thread.accumulatedCostUsd as number)
-            : undefined,
-        sessionId: typeof thread.sessionId === "string" ? (thread.sessionId as string) : undefined,
-        messages: (thread.messages as Array<ChatMessage & { attachments?: ContextAttachment[] }>)
-          .filter(
-            (message: ChatMessage & { attachments?: ContextAttachment[] }) =>
-              message &&
-              typeof message.id === "string" &&
-              (message.role === "user" || message.role === "assistant") &&
-              typeof message.content === "string"
-          )
-          .map((message: ChatMessage & { attachments?: ContextAttachment[] }) => ({
-            ...message,
-            attachments: Array.isArray(message.attachments)
-              ? message.attachments
-                  .filter(
-                    (file) =>
-                      file &&
-                      typeof file.absolutePath === "string" &&
-                      typeof file.relativePath === "string"
-                  )
-                  .map((file) => ({
-                    absolutePath: file.absolutePath,
-                    relativePath: file.relativePath,
-                    mediaType: typeof file.mediaType === "string" ? file.mediaType : "",
-                    previewDataUrl:
-                      typeof file.previewDataUrl === "string" ? file.previewDataUrl : "",
-                    isImage: Boolean(file.isImage)
-                  }))
-              : undefined
-          }))
-      }))
-      .filter((thread: Thread) => thread.messages.length > 0);
-    return threads.length > 0 ? threads : [makeDefaultThread()];
-  } catch {
-    return [makeDefaultThread()];
-  }
 }
 
 function deriveThreadTitle(messages: ChatMessage[], fallback = "New thread"): string {
@@ -124,126 +49,279 @@ function deriveThreadTitle(messages: ChatMessage[], fallback = "New thread"): st
   return compact.length > 44 ? `${compact.slice(0, 44)}...` : compact;
 }
 
-type ActiveStreamRef = { requestId: string; assistantMessageId: string; threadId: string } | null;
+function makeDefaultThread(): Thread {
+  return {
+    id: crypto.randomUUID(),
+    title: "New thread",
+    updatedAt: Date.now(),
+    workspaceDirs: [],
+    sessions: [],
+    status: "idle"
+  };
+}
+
+function sanitizeSession(raw: Record<string, unknown>): AgentSession | null {
+  if (!raw || typeof raw.id !== "string" || typeof raw.threadId !== "string") return null;
+
+  const messages = (
+    Array.isArray(raw.messages)
+      ? (raw.messages as Array<ChatMessage & { attachments?: ContextAttachment[] }>)
+      : []
+  )
+    .filter(
+      (m) =>
+        m &&
+        typeof m.id === "string" &&
+        (m.role === "user" || m.role === "assistant") &&
+        typeof m.content === "string"
+    )
+    .map((m) => ({
+      ...m,
+      attachments: Array.isArray(m.attachments)
+        ? m.attachments
+            .filter(
+              (f) => f && typeof f.absolutePath === "string" && typeof f.relativePath === "string"
+            )
+            .map((f) => ({
+              absolutePath: f.absolutePath,
+              relativePath: f.relativePath,
+              mediaType: typeof f.mediaType === "string" ? f.mediaType : "",
+              previewDataUrl: typeof f.previewDataUrl === "string" ? f.previewDataUrl : "",
+              isImage: Boolean(f.isImage)
+            }))
+        : undefined
+    }));
+
+  const validStatuses = new Set(["idle", "running", "awaiting_approval", "done", "error"]);
+  const rawStatus = raw.status as string;
+  // On load: running/awaiting_approval → idle (stream is gone), error stays, done stays
+  let status: AgentSession["status"] = validStatuses.has(rawStatus)
+    ? (rawStatus as AgentSession["status"])
+    : "done";
+  if (status === "running" || status === "awaiting_approval") status = "idle";
+
+  return {
+    id: raw.id as string,
+    threadId: raw.threadId as string,
+    title: typeof raw.title === "string" ? raw.title : "Session",
+    messages,
+    status,
+    // Volatile — always cleared on load
+    requestId: undefined,
+    pendingApproval: null,
+    pendingQuestion: null,
+    isThinking: false,
+    // Persisted
+    sessionId: typeof raw.sessionId === "string" ? raw.sessionId : undefined,
+    contextUsage:
+      raw.contextUsage &&
+      typeof raw.contextUsage === "object" &&
+      typeof (raw.contextUsage as Record<string, unknown>).usedTokens === "number"
+        ? (raw.contextUsage as AgentSession["contextUsage"])
+        : null,
+    accumulatedCostUsd:
+      typeof raw.accumulatedCostUsd === "number" ? (raw.accumulatedCostUsd as number) : undefined,
+    sessionCostUsd: null,
+    limitsWarning: null,
+    permissionMode: undefined,
+    toolTimeline: Array.isArray(raw.toolTimeline)
+      ? (raw.toolTimeline as ToolTimelineItem[]).filter(
+          (item) => item && typeof item.toolUseId === "string"
+        )
+      : [],
+    reasoningText: typeof raw.reasoningText === "string" ? (raw.reasoningText as string) : "",
+    compactCount: typeof raw.compactCount === "number" ? (raw.compactCount as number) : 0,
+    permissionDenials: Array.isArray(raw.permissionDenials)
+      ? (raw.permissionDenials as string[]).filter((d) => typeof d === "string")
+      : [],
+    createdAt: typeof raw.createdAt === "number" ? (raw.createdAt as number) : Date.now(),
+    updatedAt: typeof raw.updatedAt === "number" ? (raw.updatedAt as number) : Date.now()
+  };
+}
+
+function safeLoadThreads(): Thread[] {
+  try {
+    const raw = localStorage.getItem(THREADS_STORAGE_KEY);
+
+    // Try legacy key migration
+    const legacyRaw = !raw ? localStorage.getItem("claude-desktop-threads-v1") : null;
+    const source = raw || legacyRaw;
+
+    if (!source) return [makeDefaultThread()];
+    const parsed = JSON.parse(source);
+    if (!Array.isArray(parsed)) return [makeDefaultThread()];
+
+    const threads: Thread[] = parsed
+      .filter((t: Record<string, unknown>) => t && typeof t.id === "string")
+      .map((t: Record<string, unknown>) => {
+        // Migrate old format: { messages, sessionId, accumulatedCostUsd, lastContextUsage }
+        if (Array.isArray(t.messages) && !Array.isArray(t.sessions)) {
+          const rawMessages = t.messages as Array<
+            ChatMessage & { attachments?: ContextAttachment[] }
+          >;
+          const migratedSession: AgentSession = {
+            id: crypto.randomUUID(),
+            threadId: t.id as string,
+            title: typeof t.title === "string" ? (t.title as string) : "Session",
+            messages: rawMessages
+              .filter(
+                (m) =>
+                  m &&
+                  typeof m.id === "string" &&
+                  (m.role === "user" || m.role === "assistant") &&
+                  typeof m.content === "string"
+              )
+              .map((m) => ({
+                ...m,
+                attachments: Array.isArray(m.attachments)
+                  ? m.attachments
+                      .filter(
+                        (f) =>
+                          f &&
+                          typeof f.absolutePath === "string" &&
+                          typeof f.relativePath === "string"
+                      )
+                      .map((f) => ({
+                        absolutePath: f.absolutePath,
+                        relativePath: f.relativePath,
+                        mediaType: typeof f.mediaType === "string" ? f.mediaType : "",
+                        previewDataUrl:
+                          typeof f.previewDataUrl === "string" ? f.previewDataUrl : "",
+                        isImage: Boolean(f.isImage)
+                      }))
+                  : undefined
+              })),
+            status: "done",
+            sessionId: typeof t.sessionId === "string" ? (t.sessionId as string) : undefined,
+            contextUsage:
+              t.lastContextUsage &&
+              typeof (t.lastContextUsage as Record<string, unknown>).usedTokens === "number"
+                ? (t.lastContextUsage as AgentSession["contextUsage"])
+                : null,
+            accumulatedCostUsd:
+              typeof t.accumulatedCostUsd === "number"
+                ? (t.accumulatedCostUsd as number)
+                : undefined,
+            toolTimeline: [],
+            reasoningText: "",
+            compactCount: 0,
+            permissionDenials: [],
+            createdAt: typeof t.updatedAt === "number" ? (t.updatedAt as number) : Date.now(),
+            updatedAt: typeof t.updatedAt === "number" ? (t.updatedAt as number) : Date.now()
+          };
+          return {
+            id: t.id as string,
+            title: typeof t.title === "string" ? (t.title as string) : "New thread",
+            updatedAt: typeof t.updatedAt === "number" ? (t.updatedAt as number) : Date.now(),
+            workspaceDirs: [],
+            sessions: migratedSession.messages.length > 0 ? [migratedSession] : [],
+            status: "done" as Thread["status"]
+          };
+        }
+
+        // New format
+        const sessions: AgentSession[] = Array.isArray(t.sessions)
+          ? (t.sessions as Record<string, unknown>[])
+              .map(sanitizeSession)
+              .filter((s): s is AgentSession => s !== null)
+          : [];
+
+        return {
+          id: t.id as string,
+          title: typeof t.title === "string" ? (t.title as string) : "New thread",
+          updatedAt: typeof t.updatedAt === "number" ? (t.updatedAt as number) : Date.now(),
+          workspaceDirs: Array.isArray(t.workspaceDirs)
+            ? (t.workspaceDirs as string[]).filter((d) => typeof d === "string")
+            : [],
+          sessions,
+          status: deriveThreadStatus(sessions)
+        };
+      })
+      .filter((t: Thread) => t.sessions.length > 0 || true); // Keep empty threads too
+
+    return threads.length > 0 ? threads : [makeDefaultThread()];
+  } catch {
+    return [makeDefaultThread()];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Store types
+// ---------------------------------------------------------------------------
+
+export type SkillEntry = { name: string; description: string; type: "command" | "skill" };
 
 type ChatState = {
   threads: Thread[];
   activeThreadId: string;
-  executionRequestId: string | null;
-  executionAssistantMessageId: string | null;
-  activeToolTimelineByRequest: Record<string, ToolTimelineItem[]>;
-  reasoningText: string;
-  reasoningOpen: boolean;
-  isThinking: boolean;
-  taskOpen: boolean;
-  timelineOpen: boolean;
+  activeSessionId: string;
   slashCommands: string[];
-  isSending: boolean;
-  permissionMode: PermissionMode;
-  contextUsage: {
-    usedTokens: number;
-    maxTokens: number;
-    percent: number;
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadInputTokens: number;
-    cacheCreationInputTokens: number;
-  } | null;
-  limitsWarning: {
-    level: "info" | "warning";
-    message: string;
-    fiveHourPercent: number | null;
-    weeklyPercent: number | null;
-  } | null;
-  compactCount: number;
-  permissionDenials: string[];
-  sessionCostUsd: number | null;
-  pendingApproval: PendingApproval | null;
-  pendingQuestion: PendingQuestion | null;
-
-  // Internal ref (not reactive, just storage)
-  _activeStreamRef: ActiveStreamRef;
+  skillEntries: SkillEntry[];
   _unsubscribeStream: (() => void) | null;
-
-  // Derived
-  activeThread: Thread | null;
-  messages: Array<ChatMessage & { attachments?: ContextAttachment[] }>;
-  activeToolTimeline: ToolTimelineItem[];
-  pendingTools: ToolTimelineItem[];
-  completedTools: ToolTimelineItem[];
 
   // Actions
   setThreads: (value: Thread[] | ((current: Thread[]) => Thread[])) => void;
   setActiveThreadId: (id: string) => void;
-  setReasoningOpen: (value: boolean) => void;
-  setTaskOpen: (value: boolean) => void;
-  setTimelineOpen: (value: boolean) => void;
+  setActiveSessionId: (id: string) => void;
+  createThread: () => Promise<void>;
   persistThreads: () => void;
   initStreamListener: () => void;
   cleanupStreamListener: () => void;
-  onApprove: (approvalId: string, input: Record<string, unknown>) => Promise<void>;
-  onDeny: (approvalId: string) => Promise<void>;
-  onAnswerQuestion: (approvalId: string, answers: Record<string, string>) => Promise<void>;
-  onAbortStream: () => Promise<void>;
+  loadSkills: () => Promise<void>;
   onSubmit: (
     message: {
       text: string;
       files: Array<{ filename?: string; mediaType?: string; url?: string }>;
     },
     event: FormEvent<HTMLFormElement>,
-    effort?: string
+    effort?: string,
+    targetSessionId?: string | null
   ) => Promise<void>;
+  onApprove: (approvalId: string, input: Record<string, unknown>) => Promise<void>;
+  onDeny: (approvalId: string) => Promise<void>;
+  onAnswerQuestion: (approvalId: string, answers: Record<string, string>) => Promise<void>;
+  onAbortSession: (sessionId: string) => Promise<void>;
+  addWorkspaceDirToThread: (threadId: string, dir: string) => void;
+  removeWorkspaceDirFromThread: (threadId: string, dir: string) => void;
+  deleteThread: (threadId: string) => void;
   makeMessage: typeof makeMessage;
   deriveThreadTitle: typeof deriveThreadTitle;
 };
 
+// ---------------------------------------------------------------------------
+// Helper: update a specific session inside threads
+// ---------------------------------------------------------------------------
+
+function patchSession(
+  threads: Thread[],
+  threadId: string,
+  sessionId: string,
+  patch: Partial<AgentSession> | ((s: AgentSession) => Partial<AgentSession>)
+): Thread[] {
+  return threads.map((thread) => {
+    if (thread.id !== threadId) return thread;
+    const sessions = thread.sessions.map((session) => {
+      if (session.id !== sessionId) return session;
+      const updates = typeof patch === "function" ? patch(session) : patch;
+      return { ...session, ...updates };
+    });
+    return { ...thread, sessions, status: deriveThreadStatus(sessions) };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Store
+// ---------------------------------------------------------------------------
+
+const _initialThreads = safeLoadThreads();
+
 export const useChatStore = create<ChatState>((set, get) => ({
-  threads: safeLoadThreads(),
-  activeThreadId: "",
-  executionRequestId: null,
-  executionAssistantMessageId: null,
-  activeToolTimelineByRequest: {},
-  reasoningText: "",
-  reasoningOpen: false,
-  isThinking: false,
-  taskOpen: true,
-  timelineOpen: true,
+  threads: _initialThreads,
+  activeThreadId: _initialThreads[0]?.id ?? "",
+  activeSessionId: _initialThreads[0]?.sessions[_initialThreads[0].sessions.length - 1]?.id ?? "",
   slashCommands: FALLBACK_SLASH_COMMANDS,
-  isSending: false,
-  permissionMode: "unknown",
-  contextUsage: null,
-  limitsWarning: null,
-  compactCount: 0,
-  permissionDenials: [],
-  sessionCostUsd: null,
-  pendingApproval: null,
-  pendingQuestion: null,
-
-  _activeStreamRef: null,
+  skillEntries: [],
   _unsubscribeStream: null,
-
-  get activeThread() {
-    const { threads, activeThreadId } = get();
-    return threads.find((t) => t.id === activeThreadId) ?? threads[0] ?? null;
-  },
-
-  get messages() {
-    const activeThread = get().activeThread;
-    return activeThread?.messages ?? [];
-  },
-
-  get activeToolTimeline() {
-    const { executionRequestId, activeToolTimelineByRequest } = get();
-    return executionRequestId ? activeToolTimelineByRequest[executionRequestId] || [] : [];
-  },
-
-  get pendingTools() {
-    return get().activeToolTimeline.filter((item) => item.status === "pending");
-  },
-
-  get completedTools() {
-    return get().activeToolTimeline.filter((item) => item.status !== "pending");
-  },
 
   setThreads: (value) =>
     set((state) => {
@@ -251,10 +329,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return { threads: next };
     }),
 
-  setActiveThreadId: (id) => set({ activeThreadId: id }),
-  setReasoningOpen: (value) => set({ reasoningOpen: value }),
-  setTaskOpen: (value) => set({ taskOpen: value }),
-  setTimelineOpen: (value) => set({ timelineOpen: value }),
+  setActiveThreadId: (id) => {
+    const { threads } = get();
+    const thread = threads.find((t) => t.id === id);
+    const lastSession = thread?.sessions[thread.sessions.length - 1];
+    set({ activeThreadId: id, activeSessionId: lastSession?.id ?? "" });
+  },
+
+  setActiveSessionId: (id) => set({ activeSessionId: id }),
+
+  createThread: async () => {
+    const result = await window.desktop.workspace.pickDirectory();
+    const newThread = makeDefaultThread();
+    if (result.ok && result.path) {
+      newThread.workspaceDirs = [result.path];
+      const folderName = result.path.split("/").filter(Boolean).pop() ?? result.path;
+      newThread.title = folderName;
+    }
+    set((state) => ({
+      threads: [newThread, ...state.threads],
+      activeThreadId: newThread.id,
+      activeSessionId: ""
+    }));
+  },
 
   persistThreads: () => {
     try {
@@ -266,8 +363,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   initStreamListener: () => {
     const unsubscribe = window.desktop.chat.onStreamEvent((event: ChatStreamEvent) => {
-      const active = get()._activeStreamRef;
-      if (!active || event.requestId !== active.requestId) return;
+      const location = _activeStreams.get(event.requestId);
+      if (!location) return;
+
+      const { threadId, sessionId } = location;
 
       if (event.type === "slashCommands") {
         if (event.commands.length > 0) {
@@ -277,36 +376,50 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       if (event.type === "status") {
-        set({ permissionMode: event.permissionMode, contextUsage: event.context });
+        set((state) => ({
+          threads: patchSession(state.threads, threadId, sessionId, {
+            contextUsage: event.context,
+            permissionMode: event.permissionMode,
+            updatedAt: Date.now()
+          })
+        }));
         return;
       }
 
       if (event.type === "limits") {
-        set({
-          limitsWarning: {
-            level: event.level,
-            message: event.message,
-            fiveHourPercent: event.fiveHourPercent,
-            weeklyPercent: event.weeklyPercent
-          }
-        });
+        set((state) => ({
+          threads: patchSession(state.threads, threadId, sessionId, {
+            limitsWarning: {
+              level: event.level,
+              message: event.message,
+              fiveHourPercent: event.fiveHourPercent,
+              weeklyPercent: event.weeklyPercent
+            }
+          })
+        }));
         return;
       }
 
       if (event.type === "compactBoundary") {
-        set((state) => ({ compactCount: state.compactCount + 1 }));
+        set((state) => ({
+          threads: patchSession(state.threads, threadId, sessionId, (s) => ({
+            compactCount: s.compactCount + 1
+          }))
+        }));
         return;
       }
 
       if (event.type === "permissionDenials") {
         set((state) => ({
-          permissionDenials: [...new Set([...state.permissionDenials, ...event.denials])]
+          threads: patchSession(state.threads, threadId, sessionId, (s) => ({
+            permissionDenials: [...new Set([...s.permissionDenials, ...event.denials])]
+          }))
         }));
         return;
       }
 
       if (event.type === "approvalRequest") {
-        // Auto-aprovação se existe regra persistida
+        // Auto-approve if rule exists
         if (usePermissionsStore.getState().matchesRule(event.toolName, event.input)) {
           void window.desktop.chat.respondToApproval(event.approvalId, {
             behavior: "allow",
@@ -314,172 +427,181 @@ export const useChatStore = create<ChatState>((set, get) => ({
           });
           return;
         }
-        set({
-          pendingApproval: {
-            approvalId: event.approvalId,
-            toolName: event.toolName,
-            input: event.input
-          }
-        });
+        set((state) => ({
+          threads: patchSession(state.threads, threadId, sessionId, {
+            status: "awaiting_approval",
+            pendingApproval: {
+              approvalId: event.approvalId,
+              toolName: event.toolName,
+              input: event.input
+            },
+            pendingQuestion: null
+          })
+        }));
         return;
       }
 
       if (event.type === "askUser") {
-        set({
-          pendingQuestion: {
-            approvalId: event.approvalId,
-            questions: event.input.questions
-          }
-        });
+        set((state) => ({
+          threads: patchSession(state.threads, threadId, sessionId, {
+            status: "awaiting_approval",
+            pendingQuestion: {
+              approvalId: event.approvalId,
+              questions: event.input.questions
+            },
+            pendingApproval: null
+          })
+        }));
         return;
       }
 
       if (event.type === "toolUse") {
-        set((state) => {
-          const currentItems = state.activeToolTimelineByRequest[event.requestId] || [];
-          const nextSummary =
-            event.name === "AskUserQuestion"
-              ? JSON.stringify(event.input)
-              : summarizeToolInput(event.input);
-          const existingIndex = currentItems.findIndex(
-            (item) => item.toolUseId === event.toolUseId
-          );
-          const nextItems: ToolTimelineItem[] =
-            existingIndex >= 0
-              ? currentItems.map((item, index) =>
-                  index === existingIndex
-                    ? {
-                        ...item,
-                        name: event.name,
-                        inputSummary: nextSummary,
-                        status: "pending" as const
-                      }
-                    : item
-                )
-              : [
-                  ...currentItems,
-                  {
-                    toolUseId: event.toolUseId,
-                    name: event.name,
-                    inputSummary: nextSummary,
-                    resultSummary: "",
-                    status: "pending" as const,
-                    startedAt: event.timestamp,
-                    finishedAt: null
-                  }
-                ];
-          return {
-            activeToolTimelineByRequest: {
-              ...state.activeToolTimelineByRequest,
-              [event.requestId]: nextItems
-            },
-            reasoningText: appendReasoningLine(state.reasoningText, `Calling ${event.name}...`),
-            reasoningOpen: false,
-            isThinking: true,
-            taskOpen: true,
-            timelineOpen: true
-          };
-        });
+        set((state) => ({
+          threads: patchSession(state.threads, threadId, sessionId, (s) => {
+            const currentItems = s.toolTimeline;
+            const nextSummary =
+              event.name === "AskUserQuestion"
+                ? JSON.stringify(event.input)
+                : summarizeToolInput(event.input);
+            const existingIndex = currentItems.findIndex(
+              (item) => item.toolUseId === event.toolUseId
+            );
+            const nextItems: ToolTimelineItem[] =
+              existingIndex >= 0
+                ? currentItems.map((item, i) =>
+                    i === existingIndex
+                      ? {
+                          ...item,
+                          name: event.name,
+                          inputSummary: nextSummary,
+                          status: "pending" as const
+                        }
+                      : item
+                  )
+                : [
+                    ...currentItems,
+                    {
+                      toolUseId: event.toolUseId,
+                      name: event.name,
+                      inputSummary: nextSummary,
+                      resultSummary: "",
+                      status: "pending" as const,
+                      startedAt: event.timestamp,
+                      finishedAt: null
+                    }
+                  ];
+            return {
+              toolTimeline: nextItems,
+              reasoningText: appendReasoningLine(s.reasoningText, `Calling ${event.name}...`),
+              isThinking: true,
+              status: "running" as const
+            };
+          })
+        }));
         return;
       }
 
       if (event.type === "toolResult") {
-        set((state) => {
-          const currentItems = state.activeToolTimelineByRequest[event.requestId] || [];
-          const resultSummary = summarizeToolResult(event.content);
-          const nextStatus: ToolTimelineItem["status"] = event.isError ? "error" : "completed";
-          const existingIndex = currentItems.findIndex(
-            (item) => item.toolUseId === event.toolUseId
-          );
-          const nextItems: ToolTimelineItem[] =
-            existingIndex >= 0
-              ? currentItems.map((item, index) =>
-                  index === existingIndex
-                    ? { ...item, status: nextStatus, resultSummary, finishedAt: event.timestamp }
-                    : item
-                )
-              : [
-                  ...currentItems,
-                  {
-                    toolUseId: event.toolUseId,
-                    name: "tool",
-                    inputSummary: "No input payload.",
-                    resultSummary,
-                    status: nextStatus,
-                    startedAt: event.timestamp,
-                    finishedAt: event.timestamp
-                  }
-                ];
-          const toolName =
-            currentItems.find((item) => item.toolUseId === event.toolUseId)?.name ?? "tool";
-          return {
-            activeToolTimelineByRequest: {
-              ...state.activeToolTimelineByRequest,
-              [event.requestId]: nextItems
-            },
-            reasoningText: appendReasoningLine(
-              state.reasoningText,
-              event.isError ? `${toolName} failed.` : `${toolName} done.`
-            )
-          };
-        });
+        set((state) => ({
+          threads: patchSession(state.threads, threadId, sessionId, (s) => {
+            const currentItems = s.toolTimeline;
+            const resultSummary = summarizeToolResult(event.content);
+            const nextStatus: ToolTimelineItem["status"] = event.isError ? "error" : "completed";
+            const existingIndex = currentItems.findIndex(
+              (item) => item.toolUseId === event.toolUseId
+            );
+            const nextItems: ToolTimelineItem[] =
+              existingIndex >= 0
+                ? currentItems.map((item, i) =>
+                    i === existingIndex
+                      ? { ...item, status: nextStatus, resultSummary, finishedAt: event.timestamp }
+                      : item
+                  )
+                : [
+                    ...currentItems,
+                    {
+                      toolUseId: event.toolUseId,
+                      name: "tool",
+                      inputSummary: "No input payload.",
+                      resultSummary,
+                      status: nextStatus,
+                      startedAt: event.timestamp,
+                      finishedAt: event.timestamp
+                    }
+                  ];
+            const toolName =
+              currentItems.find((item) => item.toolUseId === event.toolUseId)?.name ?? "tool";
+            return {
+              toolTimeline: nextItems,
+              reasoningText: appendReasoningLine(
+                s.reasoningText,
+                event.isError ? `${toolName} failed.` : `${toolName} done.`
+              )
+            };
+          })
+        }));
         return;
       }
 
       if (event.type === "delta") {
-        set((state) => {
-          const nextThreads = state.threads.map((thread) => {
-            if (thread.id !== active.threadId) return thread;
-            const nextMessages = thread.messages.map((message) =>
-              message.id === active.assistantMessageId
-                ? { ...message, content: event.content }
-                : message
-            );
+        set((state) => ({
+          threads: patchSession(state.threads, threadId, sessionId, (s) => {
+            // Find the last assistant message (the streaming one)
+            const lastAssistantIdx = [...s.messages]
+              .reverse()
+              .findIndex((m) => m.role === "assistant");
+            const streamingMsgIdx =
+              lastAssistantIdx >= 0 ? s.messages.length - 1 - lastAssistantIdx : -1;
+            const patchedMessages =
+              streamingMsgIdx >= 0
+                ? s.messages.map((msg, i) =>
+                    i === streamingMsgIdx ? { ...msg, content: event.content } : msg
+                  )
+                : s.messages;
             return {
-              ...thread,
-              messages: nextMessages,
+              messages: patchedMessages,
+              isThinking: false,
               updatedAt: Date.now(),
-              title: deriveThreadTitle(nextMessages, thread.title)
+              title: deriveThreadTitle(patchedMessages, s.title)
             };
-          });
-          return { threads: nextThreads, isThinking: false, reasoningOpen: false };
-        });
+          })
+        }));
         return;
       }
 
       if (event.type === "done") {
-        set((state) => {
-          const nextThreads = state.threads.map((thread) => {
-            if (thread.id !== active.threadId) return thread;
-            const nextMessages = thread.messages.map((message) =>
-              message.id === active.assistantMessageId
-                ? { ...message, content: event.content }
-                : message
-            );
-            const prevCost = thread.accumulatedCostUsd ?? 0;
+        _activeStreams.delete(event.requestId);
+        set((state) => ({
+          threads: patchSession(state.threads, threadId, sessionId, (s) => {
+            const lastAssistantIdx = [...s.messages]
+              .reverse()
+              .findIndex((m) => m.role === "assistant");
+            const streamingMsgIdx =
+              lastAssistantIdx >= 0 ? s.messages.length - 1 - lastAssistantIdx : -1;
+            const patchedMessages =
+              streamingMsgIdx >= 0
+                ? s.messages.map((msg, i) =>
+                    i === streamingMsgIdx ? { ...msg, content: event.content } : msg
+                  )
+                : s.messages;
+            const prevCost = s.accumulatedCostUsd ?? 0;
             const addCost = event.sessionCostUsd ?? 0;
             return {
-              ...thread,
-              messages: nextMessages,
-              updatedAt: Date.now(),
-              title: deriveThreadTitle(nextMessages, thread.title),
+              messages: patchedMessages,
+              status: "done" as const,
+              requestId: undefined,
+              pendingApproval: null,
+              pendingQuestion: null,
+              isThinking: false,
+              runningStartedAt: undefined,
+              sessionCostUsd: event.sessionCostUsd ?? null,
               accumulatedCostUsd: prevCost + addCost,
-              sessionId: event.sessionId ?? thread.sessionId
+              sessionId: event.sessionId ?? s.sessionId,
+              updatedAt: Date.now(),
+              title: deriveThreadTitle(patchedMessages, s.title)
             };
-          });
-          return {
-            threads: nextThreads,
-            isSending: false,
-            isThinking: false,
-            reasoningOpen: false,
-            taskOpen: false,
-            timelineOpen: false,
-            sessionCostUsd: event.sessionCostUsd ?? null,
-            pendingApproval: null,
-            pendingQuestion: null,
-            _activeStreamRef: null
-          };
-        });
+          })
+        }));
         useSettingsStore.getState().setStatus(`Reply via ${event.provider}.`);
         void Promise.all([
           useSettingsStore.getState().refreshSettings(),
@@ -491,21 +613,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       if (event.type === "aborted") {
-        set({
-          isSending: false,
-          isThinking: false,
-          reasoningOpen: false,
-          taskOpen: false,
-          timelineOpen: false,
-          pendingApproval: null,
-          pendingQuestion: null,
-          _activeStreamRef: null
-        });
+        _activeStreams.delete(event.requestId);
+        set((state) => ({
+          threads: patchSession(state.threads, threadId, sessionId, {
+            status: "idle",
+            requestId: undefined,
+            pendingApproval: null,
+            pendingQuestion: null,
+            isThinking: false,
+            runningStartedAt: undefined
+          })
+        }));
         useSettingsStore.getState().setStatus("Response interrupted.");
         return;
       }
 
       if (event.type === "error") {
+        _activeStreams.delete(event.requestId);
         const friendlyError = normalizeErrorMessage(event.error);
         const subtype = event.errorSubtype || "error";
         const baseMessage =
@@ -514,33 +638,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
             : subtype === "error_max_budget_usd"
               ? "Limite de custo atingido."
               : friendlyError;
-        set((state) => {
-          const nextThreads = state.threads.map((thread) => {
-            if (thread.id !== active.threadId) return thread;
-            const nextMessages = thread.messages.map((message) =>
-              message.id === active.assistantMessageId
-                ? { ...message, content: `Error: ${baseMessage}` }
-                : message
-            );
+        set((state) => ({
+          threads: patchSession(state.threads, threadId, sessionId, (s) => {
+            const lastAssistantIdx = [...s.messages]
+              .reverse()
+              .findIndex((m) => m.role === "assistant");
+            const streamingMsgIdx =
+              lastAssistantIdx >= 0 ? s.messages.length - 1 - lastAssistantIdx : -1;
+            const patchedMessages =
+              streamingMsgIdx >= 0
+                ? s.messages.map((msg, i) =>
+                    i === streamingMsgIdx ? { ...msg, content: `Error: ${baseMessage}` } : msg
+                  )
+                : s.messages;
             return {
-              ...thread,
-              messages: nextMessages,
-              updatedAt: Date.now(),
-              title: deriveThreadTitle(nextMessages, thread.title)
+              messages: patchedMessages,
+              status: "error" as const,
+              requestId: undefined,
+              pendingApproval: null,
+              pendingQuestion: null,
+              isThinking: false,
+              runningStartedAt: undefined,
+              updatedAt: Date.now()
             };
-          });
-          return {
-            threads: nextThreads,
-            isSending: false,
-            isThinking: false,
-            reasoningOpen: false,
-            taskOpen: false,
-            timelineOpen: false,
-            pendingApproval: null,
-            pendingQuestion: null,
-            _activeStreamRef: null
-          };
-        });
+          })
+        }));
         useSettingsStore.getState().setStatus(baseMessage);
       }
     });
@@ -549,21 +671,61 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   cleanupStreamListener: () => {
-    const { _unsubscribeStream, _activeStreamRef } = get();
+    const { _unsubscribeStream } = get();
     if (_unsubscribeStream) _unsubscribeStream();
-    if (_activeStreamRef) {
-      void window.desktop.chat.abortStream(_activeStreamRef.requestId);
+    // Abort all active streams
+    for (const [requestId] of _activeStreams) {
+      void window.desktop.chat.abortStream(requestId).catch(() => {});
     }
+    _activeStreams.clear();
     set({ _unsubscribeStream: null });
   },
 
+  loadSkills: async () => {
+    try {
+      const result = await window.desktop.workspace.getSkills();
+      if (!result.ok) return;
+      const entries: SkillEntry[] = result.skills.map((s) => ({
+        name: s.name,
+        description: s.description,
+        type: s.type
+      }));
+      // Merge skill names into slashCommands list (for autocomplete)
+      const extraNames = entries.map((e) => `/${e.name}`);
+      const { slashCommands } = get();
+      const merged = Array.from(new Set([...slashCommands, ...extraNames]));
+      set({ skillEntries: entries, slashCommands: merged });
+    } catch {
+      // Ignore — skills are best-effort
+    }
+  },
+
   onApprove: async (approvalId, input) => {
-    set((state) => ({
-      pendingApproval: null,
-      reasoningText: state.pendingApproval
-        ? appendReasoningLine(state.reasoningText, `${state.pendingApproval.toolName} running...`)
-        : state.reasoningText
-    }));
+    // Find session with this approvalId
+    const { threads } = get();
+    let foundThreadId: string | null = null;
+    let foundSessionId: string | null = null;
+    let toolName: string | null = null;
+    for (const thread of threads) {
+      for (const session of thread.sessions) {
+        if (session.pendingApproval?.approvalId === approvalId) {
+          foundThreadId = thread.id;
+          foundSessionId = session.id;
+          toolName = session.pendingApproval.toolName;
+          break;
+        }
+      }
+      if (foundSessionId) break;
+    }
+    if (foundThreadId && foundSessionId) {
+      set((state) => ({
+        threads: patchSession(state.threads, foundThreadId!, foundSessionId!, (s) => ({
+          pendingApproval: null,
+          status: "running" as const,
+          reasoningText: appendReasoningLine(s.reasoningText, `${toolName} running...`)
+        }))
+      }));
+    }
     await window.desktop.chat.respondToApproval(approvalId, {
       behavior: "allow",
       updatedInput: input
@@ -571,12 +733,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   onDeny: async (approvalId) => {
-    set((state) => ({
-      pendingApproval: null,
-      reasoningText: state.pendingApproval
-        ? appendReasoningLine(state.reasoningText, `${state.pendingApproval.toolName} denied.`)
-        : state.reasoningText
-    }));
+    const { threads } = get();
+    let foundThreadId: string | null = null;
+    let foundSessionId: string | null = null;
+    let toolName: string | null = null;
+    for (const thread of threads) {
+      for (const session of thread.sessions) {
+        if (session.pendingApproval?.approvalId === approvalId) {
+          foundThreadId = thread.id;
+          foundSessionId = session.id;
+          toolName = session.pendingApproval.toolName;
+          break;
+        }
+      }
+      if (foundSessionId) break;
+    }
+    if (foundThreadId && foundSessionId) {
+      set((state) => ({
+        threads: patchSession(state.threads, foundThreadId!, foundSessionId!, (s) => ({
+          pendingApproval: null,
+          reasoningText: appendReasoningLine(s.reasoningText, `${toolName} denied.`)
+        }))
+      }));
+    }
     await window.desktop.chat.respondToApproval(approvalId, {
       behavior: "deny",
       message: "User denied."
@@ -584,37 +763,67 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   onAnswerQuestion: async (approvalId, answers) => {
-    set({ pendingQuestion: null });
+    const { threads } = get();
+    let foundThreadId: string | null = null;
+    let foundSessionId: string | null = null;
+    for (const thread of threads) {
+      for (const session of thread.sessions) {
+        if (session.pendingQuestion?.approvalId === approvalId) {
+          foundThreadId = thread.id;
+          foundSessionId = session.id;
+          break;
+        }
+      }
+      if (foundSessionId) break;
+    }
+    if (foundThreadId && foundSessionId) {
+      set((state) => ({
+        threads: patchSession(state.threads, foundThreadId!, foundSessionId!, {
+          pendingQuestion: null,
+          status: "running" as const
+        })
+      }));
+    }
     await window.desktop.chat.respondToApproval(approvalId, {
       behavior: "allow",
       updatedInput: { answers }
     });
   },
 
-  onAbortStream: async () => {
-    const active = get()._activeStreamRef;
-    if (!active) return;
+  onAbortSession: async (sessionId) => {
+    // Find requestId for this session
+    const { threads } = get();
+    let requestId: string | undefined;
+    for (const thread of threads) {
+      const session = thread.sessions.find((s) => s.id === sessionId);
+      if (session) {
+        requestId = session.requestId;
+        break;
+      }
+    }
+    if (!requestId) return;
     try {
-      await window.desktop.chat.abortStream(active.requestId);
+      await window.desktop.chat.abortStream(requestId);
     } catch {
       // Ignore
     }
   },
 
-  onSubmit: async (message, event, effort) => {
+  onSubmit: async (message, event, effort, targetSessionId) => {
     event.preventDefault();
     const settings = useSettingsStore.getState().settings;
     const contextFiles = useWorkspaceStore.getState().contextFiles;
 
     const prompt = message.text.trim();
-    const state = get();
-    const activeThread = state.activeThread;
+    const { threads, activeThreadId } = get();
+    const activeThread = threads.find((t) => t.id === activeThreadId) ?? threads[0] ?? null;
 
     if (!activeThread || !settings || !prompt) return;
-    if (state.isSending) return;
     if (settings.authMode === "api-key" && !settings.hasApiKey) return;
+
     const isSlashCommand = /^\/\S+/.test(prompt);
 
+    // Persist pasted images
     const persistedPastedFiles: ContextAttachment[] = [];
     for (const file of message.files || []) {
       const dataUrl = typeof file?.url === "string" ? file.url : "";
@@ -658,86 +867,168 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const threadId = activeThread.id;
     const userMessage = makeMessage("user", prompt, contextForSend);
     const assistantMessage = makeMessage("assistant", "");
-    const nextMessages = [...activeThread.messages, userMessage];
-    const messagesForSend = [
-      ...activeThread.messages.map((msg) => ({ id: msg.id, role: msg.role, content: msg.content })),
-      { id: userMessage.id, role: "user" as const, content: finalPrompt }
-    ];
+    const messagesForSend = [{ id: userMessage.id, role: "user" as const, content: finalPrompt }];
 
-    set((s) => ({
-      executionRequestId: null,
-      executionAssistantMessageId: assistantMessage.id,
-      activeToolTimelineByRequest: {},
+    useWorkspaceStore.getState().setContextFiles([]);
+    useSettingsStore.getState().setStatus("Starting stream...");
+
+    // -----------------------------------------------------------------------
+    // Path A: continue an existing session (same Claude sessionId = --resume)
+    // -----------------------------------------------------------------------
+    if (targetSessionId) {
+      const targetSession = activeThread.sessions.find((s) => s.id === targetSessionId);
+      if (!targetSession) return;
+
+      set((s) => ({
+        threads: patchSession(s.threads, threadId, targetSessionId, (sess) => ({
+          messages: [...sess.messages, userMessage, assistantMessage],
+          status: "running" as const,
+          isThinking: true,
+          reasoningText: "Preparing execution...",
+          toolTimeline: [],
+          runningStartedAt: Date.now(),
+          updatedAt: Date.now()
+        }))
+      }));
+
+      try {
+        const started = await window.desktop.chat.startStream({
+          messages: messagesForSend,
+          effort: isOpusModel(settings.model) && effort ? effort : undefined,
+          contextFiles: contextForSend,
+          resumeSessionId: targetSession.sessionId ?? "",
+          workspaceDirs: activeThread.workspaceDirs
+        });
+
+        _activeStreams.set(started.requestId, { threadId, sessionId: targetSessionId });
+        set((s) => ({
+          threads: patchSession(s.threads, threadId, targetSessionId, {
+            requestId: started.requestId
+          })
+        }));
+        useSettingsStore.getState().setStatus(`Streaming via ${started.provider}...`);
+      } catch (error) {
+        const messageText = normalizeErrorMessage((error as Error).message);
+        set((s) => ({
+          threads: patchSession(s.threads, threadId, targetSessionId, (sess) => ({
+            messages: sess.messages.map((msg, i) =>
+              i === sess.messages.length - 1 && msg.role === "assistant"
+                ? { ...msg, content: `Error: ${messageText}` }
+                : msg
+            ),
+            status: "error" as const,
+            isThinking: false,
+            reasoningText: ""
+          }))
+        }));
+        useSettingsStore.getState().setStatus(messageText);
+      }
+      return;
+    }
+
+    // -----------------------------------------------------------------------
+    // Path B: create a new independent session (fresh Claude sessionId)
+    // -----------------------------------------------------------------------
+    const newSessionId = crypto.randomUUID();
+    const newSession: AgentSession = {
+      id: newSessionId,
+      threadId,
+      title: deriveThreadTitle([userMessage], "New session"),
+      messages: [userMessage, assistantMessage],
+      status: "running",
+      requestId: undefined,
+      toolTimeline: [],
       reasoningText: "Preparing execution...",
-      reasoningOpen: false,
       isThinking: true,
-      taskOpen: true,
-      timelineOpen: true,
-      contextUsage: null,
-      permissionMode: "unknown",
-      limitsWarning: null,
+      runningStartedAt: Date.now(),
       compactCount: 0,
       permissionDenials: [],
-      sessionCostUsd: null,
-      isSending: true,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+
+    set((s) => ({
       threads: s.threads.map((thread) =>
         thread.id === threadId
           ? {
               ...thread,
-              messages: [...nextMessages, assistantMessage],
+              sessions: [...thread.sessions, newSession],
+              status: "running",
               updatedAt: Date.now(),
-              title: deriveThreadTitle(nextMessages, thread.title)
+              title:
+                thread.sessions.length === 0
+                  ? deriveThreadTitle([userMessage], thread.title)
+                  : thread.title
             }
           : thread
       )
     }));
-
-    useWorkspaceStore.getState().setContextFiles([]);
-    useSettingsStore.getState().setStatus("Starting stream...");
 
     try {
       const started = await window.desktop.chat.startStream({
         messages: messagesForSend,
         effort: isOpusModel(settings.model) && effort ? effort : undefined,
         contextFiles: contextForSend,
-        resumeSessionId: activeThread.sessionId ?? ""
+        resumeSessionId: "",
+        workspaceDirs: activeThread.workspaceDirs
       });
-      set({
-        _activeStreamRef: {
-          requestId: started.requestId,
-          assistantMessageId: assistantMessage.id,
-          threadId
-        },
-        executionRequestId: started.requestId,
-        activeToolTimelineByRequest: { [started.requestId]: [] }
-      });
+
+      _activeStreams.set(started.requestId, { threadId, sessionId: newSessionId });
+      set({ activeSessionId: newSessionId });
+      set((s) => ({
+        threads: patchSession(s.threads, threadId, newSessionId, { requestId: started.requestId })
+      }));
       useSettingsStore.getState().setStatus(`Streaming via ${started.provider}...`);
     } catch (error) {
       const messageText = normalizeErrorMessage((error as Error).message);
       set((s) => ({
-        threads: s.threads.map((thread) => {
-          if (thread.id !== threadId) return thread;
-          const patchedMessages = [
-            ...nextMessages,
-            { ...assistantMessage, content: `Error: ${messageText}` }
-          ];
-          return {
-            ...thread,
-            messages: patchedMessages,
-            updatedAt: Date.now(),
-            title: deriveThreadTitle(patchedMessages, thread.title)
-          };
-        }),
-        isSending: false,
-        executionRequestId: null,
-        reasoningOpen: false,
-        isThinking: false,
-        _activeStreamRef: null
+        threads: patchSession(s.threads, threadId, newSessionId, (sess) => ({
+          messages: sess.messages.map((msg, i) =>
+            i === sess.messages.length - 1 && msg.role === "assistant"
+              ? { ...msg, content: `Error: ${messageText}` }
+              : msg
+          ),
+          status: "error" as const,
+          isThinking: false,
+          reasoningText: ""
+        }))
       }));
       useSettingsStore.getState().setStatus(messageText);
     }
   },
 
+  addWorkspaceDirToThread: (threadId, dir) => {
+    set((state) => ({
+      threads: state.threads.map((thread) =>
+        thread.id === threadId && !thread.workspaceDirs.includes(dir)
+          ? { ...thread, workspaceDirs: [...thread.workspaceDirs, dir] }
+          : thread
+      )
+    }));
+  },
+
+  removeWorkspaceDirFromThread: (threadId, dir) => {
+    set((state) => ({
+      threads: state.threads.map((thread) =>
+        thread.id === threadId
+          ? { ...thread, workspaceDirs: thread.workspaceDirs.filter((d) => d !== dir) }
+          : thread
+      )
+    }));
+  },
+
+  deleteThread: (threadId) => {
+    set((state) => {
+      const remaining = state.threads.filter((t) => t.id !== threadId);
+      const nextActiveId =
+        state.activeThreadId === threadId ? (remaining[0]?.id ?? "") : state.activeThreadId;
+      return { threads: remaining, activeThreadId: nextActiveId };
+    });
+  },
+
   makeMessage,
   deriveThreadTitle
 }));
+
+// Re-export types for components that imported them from chat-store
+export type { PendingApproval, PendingQuestion };

@@ -33,14 +33,10 @@ import { useChatStore } from "@/stores/chat-store";
 import { SettingsMenu } from "@/components/chat/settings-menu";
 import { Sidebar } from "@/components/chat/sidebar";
 import { HeaderBar } from "@/components/chat/header-bar";
-import { ChatMessages } from "@/components/chat/chat-messages";
-import { PromptArea } from "@/components/chat/prompt-area";
-import { ToolApproval, AskUserQuestion } from "@/components/chat/tool-approval";
+import { SessionStack } from "@/components/chat/session-stack";
 
 export function ChatShell() {
-  const [input, setInput] = useState("");
-  const [effort, setEffort] = useState("medium");
-  const [activePage, setActivePage] = useState<"chat" | "preview">("chat");
+  const [activePage, setActivePage] = useState<"chat" | "preview" | "skills">("chat");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   const setStatus = useSettingsStore((s) => s.setStatus);
@@ -63,19 +59,23 @@ export function ChatShell() {
   const initStreamListener = useChatStore((s) => s.initStreamListener);
   const cleanupStreamListener = useChatStore((s) => s.cleanupStreamListener);
   const persistThreads = useChatStore((s) => s.persistThreads);
-  const isSending = useChatStore((s) => s.isSending);
-  const pendingApproval = useChatStore((s) => s.pendingApproval);
-  const pendingQuestion = useChatStore((s) => s.pendingQuestion);
-  const onApprove = useChatStore((s) => s.onApprove);
-  const onDeny = useChatStore((s) => s.onDeny);
-  const onAnswerQuestion = useChatStore((s) => s.onAnswerQuestion);
+  const loadSkills = useChatStore((s) => s.loadSkills);
 
-  const terminalHook = useTerminal(setStatus);
+  const activeThreadWorkspaceDir = useMemo(
+    () => threads.find((t) => t.id === activeThreadId)?.workspaceDirs[0] ?? undefined,
+    [threads, activeThreadId]
+  );
+  const terminalHook = useTerminal(setStatus, activeThreadWorkspaceDir);
   const previewHook = usePreview();
 
   const activeEditorTab = useMemo(
     () => editorTabs.find((tab) => tab.id === activeEditorTabId) || null,
     [editorTabs, activeEditorTabId]
+  );
+
+  const activeThread = useMemo(
+    () => threads.find((t) => t.id === activeThreadId) ?? threads[0] ?? null,
+    [threads, activeThreadId]
   );
 
   // Initialize activeThreadId
@@ -95,6 +95,11 @@ export function ChatShell() {
     initStreamListener();
     return () => cleanupStreamListener();
   }, [initStreamListener, cleanupStreamListener]);
+
+  // Load skills from installed plugins
+  useEffect(() => {
+    void loadSkills();
+  }, [loadSkills]);
 
   // Initial load
   useEffect(() => {
@@ -122,14 +127,6 @@ export function ChatShell() {
     }, 10000);
     return () => window.clearInterval(timer);
   }, []);
-
-  // Auto-open/close task panels
-  useEffect(() => {
-    if (isSending) {
-      useChatStore.getState().setTaskOpen(true);
-      useChatStore.getState().setTimelineOpen(true);
-    }
-  }, [isSending]);
 
   // Editor keyboard shortcut (Cmd+S)
   useEffect(() => {
@@ -214,29 +211,22 @@ export function ChatShell() {
               showRightPanel ? "w-[46%] min-w-[420px] shrink-0 border-r border-border/70" : ""
             )}
           >
-            <ChatMessages activePage={activePage} chatContainerMax={chatContainerMax} />
-
-            {pendingApproval && (
-              <ToolApproval approval={pendingApproval} onApprove={onApprove} onDeny={onDeny} />
+            {activeThread ? (
+              <SessionStack
+                chatContainerMax={chatContainerMax}
+                latestTerminalError={terminalHook.latestTerminalError}
+                modelOptions={modelOptions}
+                onInsertLatestTerminalError={(setInputFn) =>
+                  terminalHook.onInsertLatestTerminalError(setInputFn, setStatus)
+                }
+                setTerminalOpen={terminalHook.setTerminalOpen}
+                thread={activeThread}
+              />
+            ) : (
+              <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+                Seleciona ou cria uma thread na sidebar.
+              </div>
             )}
-
-            {pendingQuestion && (
-              <AskUserQuestion question={pendingQuestion} onAnswer={onAnswerQuestion} />
-            )}
-
-            <PromptArea
-              input={input}
-              setInput={setInput}
-              effort={effort}
-              setEffort={setEffort}
-              latestTerminalError={terminalHook.latestTerminalError}
-              onInsertLatestTerminalError={() =>
-                terminalHook.onInsertLatestTerminalError(setInput, setStatus)
-              }
-              setTerminalOpen={terminalHook.setTerminalOpen}
-              chatContainerMax={chatContainerMax}
-              modelOptions={modelOptions}
-            />
           </div>
 
           {showRightPanel ? (
