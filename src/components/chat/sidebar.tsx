@@ -10,8 +10,8 @@ import {
   Plus,
   Search,
   Settings,
+  ShoppingBag,
   Trash2,
-  Workflow,
   X
 } from "lucide-react";
 import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
@@ -23,8 +23,8 @@ import { useChatStore } from "@/stores/chat-store";
 export type SidebarProps = {
   isOpen: boolean;
   onToggle: () => void;
-  activePage: "chat" | "preview" | "skills";
-  onSelectPage: (page: "chat" | "preview" | "skills") => void;
+  activePage: "chat" | "preview" | "store";
+  onSelectPage: (page: "chat" | "preview" | "store") => void;
   /** Controlled from outside (Cmd+K) — when true, expands inline search */
   searchOpen?: boolean;
   onSearchClose?: () => void;
@@ -180,15 +180,15 @@ export function Sidebar({
         <button
           className={cn(
             "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition",
-            activePage === "skills"
+            activePage === "store"
               ? "bg-foreground/10 text-foreground"
               : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
           )}
-          onClick={() => onSelectPage("skills")}
+          onClick={() => onSelectPage("store")}
           type="button"
         >
-          <Workflow className="size-4 shrink-0" />
-          <span>Skills</span>
+          <ShoppingBag className="size-4 shrink-0" />
+          <span>Store</span>
         </button>
         <button
           className={cn(
