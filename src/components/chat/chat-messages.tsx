@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, CircleAlert, Clock3, ChevronDownIcon, Wrench } from "lucide-react";
 import { SubagentTimeline } from "@/components/chat/subagent-timeline";
+import { TeamPanel } from "@/components/chat/team-panel";
 import {
   Attachment,
   AttachmentHoverCard,
@@ -322,6 +323,8 @@ export function ChatMessages({
             Custo da sessão: ${sessionCostUsd.toFixed(4)} USD
           </div>
         ) : null}
+
+        <TeamPanel />
       </ConversationContent>
     </Conversation>
   );

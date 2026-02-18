@@ -600,6 +600,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
                       finishedAt: null
                     }
                   ];
+            // When TeamCreate is used, kick the teams watcher
+            if (event.name === "TeamCreate") {
+              const teamName = (event.input as Record<string, unknown> | null)?.team_name;
+              if (typeof teamName === "string" && teamName) {
+                // Give the SDK ~500 ms to write the config file, then refresh
+                setTimeout(() => {
+                  void window.desktop.teams?.refresh(teamName);
+                }, 600);
+              }
+            }
+
             // Track Task tool uses as subagents
             let nextSubagents = s.subagents;
             if (

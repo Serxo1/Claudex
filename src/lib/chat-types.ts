@@ -403,6 +403,57 @@ export type SubagentInfo = {
   finishedAt?: number;
 };
 
+// ---------------------------------------------------------------------------
+// Team agent types (file-based coordination via ~/.claude/teams/ + ~/.claude/tasks/)
+// ---------------------------------------------------------------------------
+
+export type TeamMember = {
+  agentId: string;
+  name: string;
+  agentType: string;
+  model: string;
+  joinedAt: number;
+  tmuxPaneId?: string;
+  cwd?: string;
+};
+
+export type TeamConfig = {
+  name: string;
+  description?: string;
+  createdAt: number;
+  leadAgentId: string;
+  leadSessionId?: string;
+  members: TeamMember[];
+};
+
+export type TeamTaskStatus = "pending" | "in_progress" | "completed" | "deleted";
+
+export type TeamTask = {
+  id: string;
+  subject: string;
+  description?: string;
+  activeForm?: string;
+  status: TeamTaskStatus;
+  owner?: string;
+  blocks?: string[];
+  blockedBy?: string[];
+};
+
+export type TeamInboxMessage = {
+  from: string;
+  text: string;
+  summary?: string;
+  timestamp: string;
+  read?: boolean;
+};
+
+export type TeamSnapshot = {
+  teamName: string;
+  config: TeamConfig | null;
+  tasks: TeamTask[];
+  inboxes: Record<string, TeamInboxMessage[]>;
+};
+
 export type EditorTab = {
   id: string;
   rootPath: string;

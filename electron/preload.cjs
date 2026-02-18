@@ -76,5 +76,15 @@ contextBridge.exposeInMainWorld("desktop", {
       ipcRenderer.on("chat:streamEvent", listener);
       return () => ipcRenderer.removeListener("chat:streamEvent", listener);
     }
+  },
+  teams: {
+    list: () => ipcRenderer.invoke("teams:list"),
+    getSnapshot: (teamName) => ipcRenderer.invoke("teams:getSnapshot", teamName),
+    refresh: (teamName) => ipcRenderer.invoke("teams:refresh", teamName),
+    onSnapshot: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("teams:snapshot", listener);
+      return () => ipcRenderer.removeListener("teams:snapshot", listener);
+    }
   }
 });

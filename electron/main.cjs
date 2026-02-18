@@ -62,6 +62,7 @@ const ide = require("./modules/ide.cjs");
 const terminal = require("./modules/terminal.cjs");
 const chat = require("./modules/chat.cjs");
 const skills = require("./modules/skills.cjs");
+const teams = require("./modules/teams.cjs");
 const { logError } = require("./modules/logger.cjs");
 const { MAX_EDITOR_FILE_SIZE, PR_TIMEOUT_MS, TEMP_PASTE_DIR } = require("./modules/constants.cjs");
 
@@ -119,6 +120,10 @@ app.whenReady().then(() => {
       nativeTheme.on("updated", () => {
         mainWindow.setVibrancy(nativeTheme.shouldUseDarkColors ? "sidebar" : null);
       });
+    }
+    if (mainWindow) {
+      teams.init(mainWindow.webContents);
+      mainWindow.on("closed", () => teams.destroy());
     }
   });
 
@@ -875,6 +880,22 @@ app.whenReady().then(() => {
     } catch (error) {
       return { ok: false, error: error.message };
     }
+  });
+
+  // ── Teams ─────────────────────────────────────────────────────────────
+
+  ipcMain.handle("teams:list", async () => {
+    return teams.listTeams();
+  });
+
+  ipcMain.handle("teams:getSnapshot", async (_event, teamName) => {
+    if (!teamName || typeof teamName !== "string") return null;
+    return teams.getTeamSnapshot(teamName);
+  });
+
+  ipcMain.handle("teams:refresh", async (_event, teamName) => {
+    if (!teamName || typeof teamName !== "string") return;
+    teams.refreshTeam(teamName);
   });
 
   // ── Debug ─────────────────────────────────────────────────────────────

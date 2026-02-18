@@ -18,7 +18,12 @@ import type {
   WorkspaceFileTreeResult,
   WorkspaceRootTree,
   WorkspaceWriteFileResult,
-  WorkspaceInfo
+  WorkspaceInfo,
+  TeamMember,
+  TeamConfig,
+  TeamTask,
+  TeamInboxMessage,
+  TeamSnapshot
 } from "@/lib/chat-types";
 
 declare global {
@@ -134,6 +139,14 @@ declare global {
       };
       debug: {
         openDevTools: () => Promise<void>;
+      };
+      teams: {
+        list: () => Promise<Array<{ teamName: string; config: TeamConfig }>>;
+        getSnapshot: (teamName: string) => Promise<TeamSnapshot | null>;
+        refresh: (teamName: string) => Promise<void>;
+        onSnapshot: (
+          callback: (payload: TeamSnapshot & { teamName: string }) => void
+        ) => () => void;
       };
     };
   }
