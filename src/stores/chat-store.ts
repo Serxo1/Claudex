@@ -558,7 +558,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   onApprove: async (approvalId, input) => {
-    set({ pendingApproval: null });
+    set((state) => ({
+      pendingApproval: null,
+      reasoningText: state.pendingApproval
+        ? appendReasoningLine(state.reasoningText, `${state.pendingApproval.toolName} running...`)
+        : state.reasoningText
+    }));
     await window.desktop.chat.respondToApproval(approvalId, {
       behavior: "allow",
       updatedInput: input
@@ -566,7 +571,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   onDeny: async (approvalId) => {
-    set({ pendingApproval: null });
+    set((state) => ({
+      pendingApproval: null,
+      reasoningText: state.pendingApproval
+        ? appendReasoningLine(state.reasoningText, `${state.pendingApproval.toolName} denied.`)
+        : state.reasoningText
+    }));
     await window.desktop.chat.respondToApproval(approvalId, {
       behavior: "deny",
       message: "User denied."

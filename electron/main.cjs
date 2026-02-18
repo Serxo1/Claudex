@@ -3,6 +3,13 @@ const path = require("node:path");
 const fs = require("node:fs");
 const { randomUUID } = require("node:crypto");
 
+// Suppress "Operation aborted" rejections from the Claude Agent SDK when a
+// stream is aborted while a tool-approval promise is still pending.
+process.on("unhandledRejection", (reason) => {
+  if (reason instanceof Error && reason.message === "Operation aborted") return;
+  console.error("Unhandled rejection:", reason);
+});
+
 async function createRoundedDockIcon() {
   const logoPath = path.join(__dirname, "../public/logo.png");
   const logoBase64 = fs.readFileSync(logoPath).toString("base64");

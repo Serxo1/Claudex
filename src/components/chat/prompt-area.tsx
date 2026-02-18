@@ -48,8 +48,8 @@ import { Suggestion, Suggestions } from "@/components/ai-elements/suggestion";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { SLASH_COMMAND_DESCRIPTIONS } from "@/lib/chat-types";
+import { ComposerPromptAttachments } from "@/components/chat/composer-attachments";
 import {
-  ComposerPromptAttachments,
   formatPermissionMode,
   isOpusModel,
   slashCommandNeedsTerminal,
