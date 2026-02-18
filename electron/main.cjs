@@ -898,6 +898,23 @@ app.whenReady().then(() => {
     teams.refreshTeam(teamName);
   });
 
+  ipcMain.handle("teams:respondToPermission", async (_event, payload) => {
+    const { teamName, agentId, requestId, behavior } = payload ?? {};
+    if (!teamName || !agentId || !requestId || !behavior) return { ok: false };
+    return teams.respondToPermission(teamName, agentId, requestId, behavior);
+  });
+
+  ipcMain.handle("teams:sendMessage", async (_event, payload) => {
+    const { teamName, agentName, content } = payload ?? {};
+    if (!teamName || !agentName || typeof content !== "string" || !content.trim()) return { ok: false };
+    return teams.sendMessageToAgent(teamName, agentName, content);
+  });
+
+  ipcMain.handle("teams:deleteTeam", async (_event, teamName) => {
+    if (!teamName || typeof teamName !== "string") return { ok: false };
+    return teams.deleteTeam(teamName);
+  });
+
   // ── Debug ─────────────────────────────────────────────────────────────
 
   ipcMain.handle("debug:openDevTools", () => {

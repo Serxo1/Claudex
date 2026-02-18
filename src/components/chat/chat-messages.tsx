@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, CircleAlert, Clock3, ChevronDownIcon, Wrench } from "lucide-react";
+import { Virtuoso } from "react-virtuoso";
 import { SubagentTimeline } from "@/components/chat/subagent-timeline";
 import { TeamPanel } from "@/components/chat/team-panel";
 import {
@@ -33,13 +34,14 @@ import {
   CommitSeparator,
   CommitTimestamp
 } from "@/components/ai-elements/commit";
-import { Conversation, ConversationContent } from "@/components/ai-elements/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { initialsFromName, toAttachmentData } from "@/lib/chat-utils";
 import type { AgentSession } from "@/lib/chat-types";
+
+type SessionMessage = AgentSession["messages"][number];
 import { useGitStore } from "@/stores/git-store";
 
 const EMPTY_ARRAY: never[] = [];
@@ -91,26 +93,31 @@ export function ChatMessages({
     };
   }, [runningStartedAt, isRunning]);
 
-  // The last assistant message is the one currently streaming (if running)
+  // Filter out hidden messages (e.g. auto-resume system prompts)
+  const visibleMessages = useMemo(
+    () => messages.filter((m) => !(m as { hidden?: boolean }).hidden),
+    [messages]
+  );
+
   const lastAssistantIdx = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "assistant") return i;
+    for (let i = visibleMessages.length - 1; i >= 0; i--) {
+      if (visibleMessages[i].role === "assistant") return i;
     }
     return -1;
-  }, [messages]);
+  }, [visibleMessages]);
 
   const pendingTools = useMemo(
     () => toolTimeline.filter((item) => item.status === "pending"),
     [toolTimeline]
   );
 
-  return (
-    <Conversation className="min-h-0 flex-1">
-      <ConversationContent
-        className={cn("mx-auto w-full gap-5 px-4 pt-4 pb-6 lg:px-8", chatContainerMax)}
-      >
-        {showCommits && recentCommits.length > 0 ? (
-          <div className="space-y-2">
+  // Stable Header component — recreated only when commits change
+  const Header = useMemo(() => {
+    if (!showCommits || recentCommits.length === 0) return undefined;
+    return function CommitsHeader() {
+      return (
+        <div className={cn("mx-auto w-full px-4 pt-4 lg:px-8", chatContainerMax)}>
+          <div className="space-y-2 pb-5">
             {recentCommits.map((commit) => (
               <Commit
                 className="border-border/70 bg-background"
@@ -152,182 +159,215 @@ export function ChatMessages({
               </Commit>
             ))}
           </div>
-        ) : null}
+        </div>
+      );
+    };
+     
+  }, [showCommits, recentCommits, chatContainerMax]);
 
-        {messages.map((message, index) => (
-          <Message className="w-full max-w-full" from={message.role} key={message.id}>
-            <MessageContent
-              className={cn(
-                "max-w-[min(880px,100%)] rounded-2xl border px-4 py-3 shadow-sm",
-                message.role === "assistant"
-                  ? "border-border/70 bg-background text-foreground"
-                  : "border-border/50 bg-card text-foreground"
-              )}
-            >
-              {message.role === "assistant" && index === lastAssistantIdx && isRunning ? (
-                <div className="space-y-3">
-                  {isThinking ? (
-                    <Reasoning
-                      defaultOpen={false}
-                      isStreaming={isThinking}
-                      onOpenChange={setReasoningOpen}
-                      open={reasoningOpen}
-                    >
-                      <ReasoningTrigger />
-                      <ReasoningContent>{reasoningText || "Thinking..."}</ReasoningContent>
-                    </Reasoning>
-                  ) : null}
+  // Footer component — recreated when session metadata changes
+  const Footer = useMemo(() => {
+    const cc = compactCount;
+    const pd = permissionDenials;
+    const cost = sessionCostUsd;
+    const teamNamesVal = session.teamNames;
+    const cmax = chatContainerMax;
+    return function FooterSection() {
+      return (
+        <div className={cn("mx-auto w-full px-4 pb-6 lg:px-8", cmax)}>
+          {cc > 0 ? (
+            <div className="mb-2 text-center text-xs text-muted-foreground">
+              Conversa compactada {cc > 1 ? `${cc}x` : ""}
+            </div>
+          ) : null}
+          {pd.length > 0 ? (
+            <div className="mb-2 rounded-lg border border-orange-500/30 bg-orange-500/10 p-3 space-y-1">
+              <div className="text-xs font-semibold text-orange-600 dark:text-orange-400 uppercase tracking-wide">
+                Ferramentas negadas
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {pd.map((denial, i) => (
+                  <span
+                    className="rounded-full bg-orange-500/20 px-2 py-0.5 text-xs text-orange-700 dark:text-orange-300"
+                    key={i}
+                  >
+                    {denial}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {cost != null ? (
+            <div className="mb-2 text-center text-xs text-muted-foreground">
+              Custo da sessão: ${cost.toFixed(4)} USD
+            </div>
+          ) : null}
+          {teamNamesVal && teamNamesVal.length > 0 ? <TeamPanel teamNames={teamNamesVal} /> : null}
+        </div>
+      );
+    };
+  }, [compactCount, permissionDenials, sessionCostUsd, session.teamNames, chatContainerMax]);
 
-                  {subagents.length > 0 ? (
-                    <SubagentTimeline subagents={subagents} isRunning={isRunning} />
-                  ) : null}
+  const virtuosoComponents = useMemo(() => ({ Header, Footer }), [Header, Footer]);
 
-                  {toolTimeline.length > 0 ? (
-                    <Collapsible onOpenChange={setTaskOpen} open={taskOpen}>
-                      <CollapsibleTrigger className="group flex items-center gap-1.5 text-xs text-muted-foreground/60 transition-colors hover:text-muted-foreground">
-                        <Wrench className="size-3 shrink-0" />
-                        {isRunning && pendingTools.length > 0 ? (
-                          <>
-                            <span className="shrink-0 font-mono">
-                              {pendingTools[pendingTools.length - 1]?.name}
-                            </span>
-                            <span className="max-w-56 truncate text-muted-foreground/40">
-                              {pendingTools[pendingTools.length - 1]?.inputSummary}
-                            </span>
-                          </>
-                        ) : (
-                          <span>
-                            {toolTimeline.length}{" "}
-                            {toolTimeline.length === 1 ? "ferramenta" : "ferramentas"}
+  const itemContent = (index: number, message: SessionMessage) => {
+    const isLastAssistant = index === lastAssistantIdx;
+    return (
+      <div
+        className={cn(
+          "mx-auto w-full px-4 lg:px-8",
+          chatContainerMax,
+          index === 0 ? "pt-4" : "pt-5"
+        )}
+      >
+        <Message className="w-full max-w-full" from={message.role}>
+          <MessageContent
+            className={cn(
+              "max-w-[min(880px,100%)] rounded-2xl border px-4 py-3 shadow-sm",
+              message.role === "assistant"
+                ? "border-border/70 bg-background text-foreground"
+                : "border-border/50 bg-card text-foreground"
+            )}
+          >
+            {message.role === "assistant" && isLastAssistant && isRunning ? (
+              <div className="space-y-3">
+                {isThinking ? (
+                  <Reasoning
+                    defaultOpen={false}
+                    isStreaming={isThinking}
+                    onOpenChange={setReasoningOpen}
+                    open={reasoningOpen}
+                  >
+                    <ReasoningTrigger />
+                    <ReasoningContent>{reasoningText || "Thinking..."}</ReasoningContent>
+                  </Reasoning>
+                ) : null}
+
+                {subagents.length > 0 ? (
+                  <SubagentTimeline subagents={subagents} isRunning={isRunning} />
+                ) : null}
+
+                {toolTimeline.length > 0 ? (
+                  <Collapsible onOpenChange={setTaskOpen} open={taskOpen}>
+                    <CollapsibleTrigger className="group flex items-center gap-1.5 text-xs text-muted-foreground/60 transition-colors hover:text-muted-foreground">
+                      <Wrench className="size-3 shrink-0" />
+                      {isRunning && pendingTools.length > 0 ? (
+                        <>
+                          <span className="shrink-0 font-mono">
+                            {pendingTools[pendingTools.length - 1]?.name}
                           </span>
-                        )}
-                        {isRunning && elapsedSeconds > 0 ? (
-                          <span className="ml-auto font-mono text-muted-foreground/40 tabular-nums">
-                            {elapsedSeconds >= 60
-                              ? `${Math.floor(elapsedSeconds / 60)}m${String(elapsedSeconds % 60).padStart(2, "0")}s`
-                              : `${elapsedSeconds}s`}
+                          <span className="max-w-56 truncate text-muted-foreground/40">
+                            {pendingTools[pendingTools.length - 1]?.inputSummary}
                           </span>
-                        ) : null}
-                        <ChevronDownIcon className="size-3 transition-transform group-data-[state=open]:rotate-180" />
-                      </CollapsibleTrigger>
-                      <CollapsibleContent className="mt-1.5">
-                        <div className="space-y-0.5 pl-1">
-                          {toolTimeline.map((item) => (
-                            <div
-                              className="flex items-center gap-1.5 py-0.5 text-xs"
-                              key={item.toolUseId}
-                            >
-                              {item.status === "pending" ? (
-                                <Clock3 className="size-3 shrink-0 animate-pulse text-muted-foreground/50" />
-                              ) : item.status === "error" ? (
-                                <CircleAlert className="size-3 shrink-0 text-destructive/60" />
-                              ) : (
-                                <CheckCircle2 className="size-3 shrink-0 text-muted-foreground/30" />
+                        </>
+                      ) : (
+                        <span>
+                          {toolTimeline.length}{" "}
+                          {toolTimeline.length === 1 ? "ferramenta" : "ferramentas"}
+                        </span>
+                      )}
+                      {isRunning && elapsedSeconds > 0 ? (
+                        <span className="ml-auto font-mono text-muted-foreground/40 tabular-nums">
+                          {elapsedSeconds >= 60
+                            ? `${Math.floor(elapsedSeconds / 60)}m${String(elapsedSeconds % 60).padStart(2, "0")}s`
+                            : `${elapsedSeconds}s`}
+                        </span>
+                      ) : null}
+                      <ChevronDownIcon className="size-3 transition-transform group-data-[state=open]:rotate-180" />
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="mt-1.5">
+                      <div className="space-y-0.5 pl-1">
+                        {toolTimeline.map((item) => (
+                          <div
+                            className="flex items-center gap-1.5 py-0.5 text-xs"
+                            key={item.toolUseId}
+                          >
+                            {item.status === "pending" ? (
+                              <Clock3 className="size-3 shrink-0 animate-pulse text-muted-foreground/50" />
+                            ) : item.status === "error" ? (
+                              <CircleAlert className="size-3 shrink-0 text-destructive/60" />
+                            ) : (
+                              <CheckCircle2 className="size-3 shrink-0 text-muted-foreground/30" />
+                            )}
+                            <span
+                              className={cn(
+                                "shrink-0 font-mono",
+                                item.status === "error"
+                                  ? "text-destructive/70"
+                                  : "text-muted-foreground/50"
                               )}
-                              <span
-                                className={cn(
-                                  "shrink-0 font-mono",
-                                  item.status === "error"
-                                    ? "text-destructive/70"
-                                    : "text-muted-foreground/50"
-                                )}
-                              >
-                                {item.name}
-                              </span>
-                              <span className="truncate text-muted-foreground/35">
-                                {item.status === "pending"
-                                  ? item.inputSummary
-                                  : item.resultSummary || item.inputSummary}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </CollapsibleContent>
-                    </Collapsible>
-                  ) : null}
+                            >
+                              {item.name}
+                            </span>
+                            <span className="truncate text-muted-foreground/35">
+                              {item.status === "pending"
+                                ? item.inputSummary
+                                : item.resultSummary || item.inputSummary}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </CollapsibleContent>
+                  </Collapsible>
+                ) : null}
 
-                  {message.content.trim() ? (
-                    <MessageResponse className="text-[14px] leading-6 text-current">
-                      {message.content}
-                    </MessageResponse>
-                  ) : null}
-                </div>
-              ) : (
-                <div className="space-y-2">
+                {message.content.trim() ? (
                   <MessageResponse className="text-[14px] leading-6 text-current">
                     {message.content}
                   </MessageResponse>
-                  {message.role === "assistant" &&
-                  index === lastAssistantIdx &&
-                  subagents.length > 0 ? (
-                    <div className="mt-3 border-t border-border/30 pt-3">
-                      <SubagentTimeline isRunning={false} subagents={subagents} />
-                    </div>
-                  ) : null}
-                  {message.role === "user" &&
-                  Array.isArray(message.attachments) &&
-                  message.attachments.length > 0 ? (
-                    <Attachments variant="inline">
-                      {message.attachments.map((file) => {
-                        const item = toAttachmentData(file);
-                        return (
-                          <AttachmentHoverCard key={`${message.id}-${file.absolutePath}`}>
-                            <AttachmentHoverCardTrigger asChild>
-                              <Attachment data={item}>
-                                <AttachmentPreview />
-                                <AttachmentInfo />
-                              </Attachment>
-                            </AttachmentHoverCardTrigger>
-                            <AttachmentHoverCardContent>
-                              <Attachment data={item}>
-                                <AttachmentPreview className="size-32" />
-                              </Attachment>
-                            </AttachmentHoverCardContent>
-                          </AttachmentHoverCard>
-                        );
-                      })}
-                    </Attachments>
-                  ) : null}
-                </div>
-              )}
-            </MessageContent>
-          </Message>
-        ))}
+                ) : null}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <MessageResponse className="text-[14px] leading-6 text-current">
+                  {message.content}
+                </MessageResponse>
+                {message.role === "assistant" && isLastAssistant && subagents.length > 0 ? (
+                  <div className="mt-3 border-t border-border/30 pt-3">
+                    <SubagentTimeline isRunning={false} subagents={subagents} />
+                  </div>
+                ) : null}
+                {message.role === "user" &&
+                Array.isArray(message.attachments) &&
+                message.attachments.length > 0 ? (
+                  <Attachments variant="inline">
+                    {message.attachments.map((file) => {
+                      const item = toAttachmentData(file);
+                      return (
+                        <AttachmentHoverCard key={`${message.id}-${file.absolutePath}`}>
+                          <AttachmentHoverCardTrigger asChild>
+                            <Attachment data={item}>
+                              <AttachmentPreview />
+                              <AttachmentInfo />
+                            </Attachment>
+                          </AttachmentHoverCardTrigger>
+                          <AttachmentHoverCardContent>
+                            <Attachment data={item}>
+                              <AttachmentPreview className="size-32" />
+                            </Attachment>
+                          </AttachmentHoverCardContent>
+                        </AttachmentHoverCard>
+                      );
+                    })}
+                  </Attachments>
+                ) : null}
+              </div>
+            )}
+          </MessageContent>
+        </Message>
+      </div>
+    );
+  };
 
-        {compactCount > 0 ? (
-          <div className="text-center text-xs text-muted-foreground">
-            Conversa compactada {compactCount > 1 ? `${compactCount}x` : ""}
-          </div>
-        ) : null}
-
-        {permissionDenials.length > 0 ? (
-          <div className="rounded-lg border border-orange-500/30 bg-orange-500/10 p-3 space-y-1">
-            <div className="text-xs font-semibold text-orange-600 dark:text-orange-400 uppercase tracking-wide">
-              Ferramentas negadas
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {permissionDenials.map((denial, i) => (
-                <span
-                  className="rounded-full bg-orange-500/20 px-2 py-0.5 text-xs text-orange-700 dark:text-orange-300"
-                  key={i}
-                >
-                  {denial}
-                </span>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {sessionCostUsd != null ? (
-          <div className="text-center text-xs text-muted-foreground">
-            Custo da sessão: ${sessionCostUsd.toFixed(4)} USD
-          </div>
-        ) : null}
-
-        {session.teamNames && session.teamNames.length > 0 ? (
-          <TeamPanel teamNames={session.teamNames} />
-        ) : null}
-      </ConversationContent>
-    </Conversation>
+  return (
+    <Virtuoso
+      style={{ flex: 1 }}
+      data={visibleMessages}
+      initialTopMostItemIndex={Math.max(0, visibleMessages.length - 1)}
+      followOutput={(isAtBottom) => (isRunning && isAtBottom ? "auto" : false)}
+      itemContent={itemContent}
+      increaseViewportBy={{ top: 400, bottom: 400 }}
+      components={virtuosoComponents}
+    />
   );
 }

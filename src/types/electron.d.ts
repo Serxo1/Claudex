@@ -148,6 +148,18 @@ declare global {
           callback: (payload: TeamSnapshot & { teamName: string }) => void
         ) => () => void;
         onAllDone: (callback: (payload: TeamSnapshot & { teamName: string }) => void) => () => void;
+        respondToPermission: (payload: {
+          teamName: string;
+          agentId: string;
+          requestId: string;
+          behavior: "allow" | "deny";
+        }) => Promise<{ ok: boolean; error?: string }>;
+        sendMessage: (payload: {
+          teamName: string;
+          agentName: string;
+          content: string;
+        }) => Promise<{ ok: boolean; error?: string }>;
+        deleteTeam: (teamName: string) => Promise<{ ok: boolean; error?: string }>;
       };
     };
   }

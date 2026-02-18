@@ -15,6 +15,8 @@ export interface ChatMessage {
   id: string;
   role: MessageRole;
   content: string;
+  /** Mensagem interna (ex: auto-resume de team agents) — não renderizada no chat */
+  hidden?: true;
 }
 
 export interface AppSettings {

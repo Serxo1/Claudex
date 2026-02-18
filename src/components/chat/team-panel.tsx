@@ -1,8 +1,19 @@
-import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Clock3, Loader2, Mail, Users } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  ArrowDownToLine,
+  CheckCircle2,
+  ChevronDown,
+  Clock3,
+  Loader2,
+  Mail,
+  Send,
+  Users
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTeamStore, type ActiveTeam } from "@/stores/team-store";
 import { useChatStore } from "@/stores/chat-store";
+import { ToolApproval } from "@/components/chat/tool-approval";
+import type { PendingApproval } from "@/stores/chat-store";
 import type { TeamTask, TeamInboxMessage } from "@/lib/chat-types";
 
 // ---------------------------------------------------------------------------
@@ -53,20 +64,39 @@ function getLatestDisplayMessage(
 function AgentCard({
   member,
   tasks,
-  messages
+  messages,
+  teamName
 }: {
   member: { name: string; agentType: string; model: string };
   tasks: TeamTask[];
   messages: TeamInboxMessage[];
+  teamName: string;
 }) {
+  const [message, setMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
   // Match by owner OR by subject when task has no owner (lead assigned task to agent by name)
   const myTasks = tasks.filter(
     (t) => t.owner === member.name || (!t.owner && t.subject === member.name)
   );
   const activeTasks = myTasks.filter((t) => t.status === "in_progress");
+  const pendingTasks = myTasks.filter((t) => t.status === "pending");
   const doneTasks = myTasks.filter((t) => t.status === "completed");
   const isActive = activeTasks.length > 0;
+  // Agent is alive if it has in_progress or pending tasks (hasn't finished yet)
+  const isAlive = activeTasks.length > 0 || pendingTasks.length > 0;
   const isLead = member.agentType === "team-lead";
+
+  const handleSend = async () => {
+    const content = message.trim();
+    if (!content || sending) return;
+    setSending(true);
+    await window.desktop.teams.sendMessage({ teamName, agentName: member.name, content });
+    setMessage("");
+    setSending(false);
+    inputRef.current?.focus();
+  };
 
   const latestMessage = getLatestDisplayMessage(messages);
 
@@ -179,6 +209,44 @@ function AgentCard({
           </p>
         </div>
       )}
+
+      {/* Compose area — visible while agent is alive (active or pending tasks) */}
+      {isAlive && (
+        <div className="flex items-center gap-1.5">
+          <input
+            ref={inputRef}
+            type="text"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void handleSend();
+              }
+            }}
+            placeholder={
+              isActive
+                ? `Mensagem para ${member.name}…`
+                : `${member.name} está a aguardar trabalho…`
+            }
+            className="min-w-0 flex-1 rounded-lg border border-border/30 bg-muted/10 px-2 py-1 text-[11px] text-foreground/80 placeholder:text-muted-foreground/30 focus:border-blue-500/40 focus:outline-none disabled:opacity-50"
+            disabled={sending}
+          />
+          <button
+            type="button"
+            onClick={() => void handleSend()}
+            disabled={!message.trim() || sending}
+            className={cn(
+              "flex size-6 shrink-0 items-center justify-center rounded-lg border transition",
+              message.trim() && !sending
+                ? "border-blue-500/30 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20"
+                : "border-border/20 bg-muted/5 text-muted-foreground/20"
+            )}
+          >
+            {sending ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -237,85 +305,59 @@ function TaskBoard({ tasks }: { tasks: TeamTask[] }) {
 // Pending approvals helpers
 // ---------------------------------------------------------------------------
 
-type PendingApproval = { from: string; toolName: string; description: string };
+type TeamPermissionRequest = {
+  requestId: string;
+  agentId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+};
+
+// Module-level tracking of already-responded permission requests (persists across renders)
+const _handledPermissions = new Map<string, Set<string>>();
+
+// Permission requests older than this are considered expired (agent already timed out)
+const PERMISSION_EXPIRY_MS = 2 * 60 * 1000; // 2 minutes
+
+function markPermissionHandled(teamName: string, requestId: string) {
+  if (!_handledPermissions.has(teamName)) _handledPermissions.set(teamName, new Set());
+  _handledPermissions.get(teamName)!.add(requestId);
+}
+
+function isPermissionHandled(teamName: string, requestId: string): boolean {
+  return _handledPermissions.get(teamName)?.has(requestId) ?? false;
+}
 
 /** Collect unprocessed permission_request messages from team-lead's inbox. */
-function getPendingApprovals(inboxes: Record<string, TeamInboxMessage[]>): PendingApproval[] {
+function getPendingApprovals(
+  teamName: string,
+  inboxes: Record<string, TeamInboxMessage[]>
+): TeamPermissionRequest[] {
   const leadMessages = inboxes["team-lead"] ?? [];
-  const pending: PendingApproval[] = [];
+  const pending: TeamPermissionRequest[] = [];
+  const now = Date.now();
   for (const msg of leadMessages) {
     try {
       const p = JSON.parse(msg.text) as Record<string, unknown>;
-      if (p.type === "permission_request") {
-        pending.push({
-          from: msg.from,
-          toolName: typeof p.tool_name === "string" ? p.tool_name : "tool",
-          description: typeof p.description === "string" ? p.description : ""
-        });
+      if (p.type !== "permission_request") continue;
+      const requestId = typeof p.request_id === "string" ? p.request_id : "";
+      if (!requestId || isPermissionHandled(teamName, requestId)) continue;
+      // Skip expired requests — the agent already timed out waiting for a response
+      const msgTime = msg.timestamp ? new Date(msg.timestamp).getTime() : 0;
+      if (msgTime > 0 && now - msgTime > PERMISSION_EXPIRY_MS) {
+        markPermissionHandled(teamName, requestId);
+        continue;
       }
+      pending.push({
+        requestId,
+        agentId: typeof p.agent_id === "string" ? p.agent_id : msg.from,
+        toolName: typeof p.tool_name === "string" ? p.tool_name : "tool",
+        input: (p.input as Record<string, unknown>) ?? {}
+      });
     } catch {
       // not JSON
     }
   }
   return pending;
-}
-
-function PendingApprovals({
-  teamName,
-  approvals
-}: {
-  teamName: string;
-  approvals: PendingApproval[];
-}) {
-  const [loading, setLoading] = useState(false);
-  const resumeForTeamApprovals = useChatStore((s) => s.resumeForTeamApprovals);
-
-  const uniqueAgents = [...new Set(approvals.map((a) => a.from))];
-
-  async function handleApprove() {
-    setLoading(true);
-    await resumeForTeamApprovals(teamName, uniqueAgents);
-    setLoading(false);
-  }
-
-  return (
-    <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.04] px-3 py-2.5">
-      <div className="flex items-start gap-2">
-        <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
-        <div className="min-w-0 flex-1 space-y-1.5">
-          <p className="text-[11px] font-semibold text-amber-600 dark:text-amber-400">
-            {approvals.length} aprovação{approvals.length !== 1 ? "ões" : ""} pendente
-            {approvals.length !== 1 ? "s" : ""}
-          </p>
-          <div className="space-y-0.5">
-            {approvals.map((a, i) => (
-              <p key={i} className="truncate text-[10px] text-muted-foreground/60">
-                <span className="font-medium text-foreground/50">{a.from}</span>
-                {" · "}
-                {a.toolName}
-                {a.description ? ` — ${a.description}` : ""}
-              </p>
-            ))}
-          </div>
-          <button
-            disabled={loading}
-            onClick={() => void handleApprove()}
-            className={cn(
-              "mt-1 flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] font-semibold text-amber-600 transition-opacity dark:text-amber-400",
-              loading ? "opacity-50" : "hover:bg-amber-500/20"
-            )}
-          >
-            {loading ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : (
-              <AlertTriangle className="size-3" />
-            )}
-            {loading ? "A enviar…" : "Processar aprovações"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +366,17 @@ function PendingApprovals({
 
 function TeamSection({ team }: { team: ActiveTeam }) {
   const { config, tasks, inboxes } = team;
+  const [collapsed, setCollapsed] = useState(false);
+  const [resuming, setResuming] = useState(false);
+  const [, forceUpdate] = useState(0);
+  const manualResumeForTeam = useChatStore((s) => s.manualResumeForTeam);
+
+  // Re-evaluate pending approvals every 30s so expired ones disappear automatically
+  useEffect(() => {
+    const interval = setInterval(() => forceUpdate((n) => n + 1), 30_000);
+    return () => clearInterval(interval);
+  }, []);
+
   if (!config) return null;
 
   const members = config.members.filter((m) => m.agentType !== "team-lead");
@@ -331,15 +384,52 @@ function TeamSection({ team }: { team: ActiveTeam }) {
   const activeTasks = tasks.filter((t) => t.status === "in_progress");
   const allDone =
     tasks.length > 0 && tasks.every((t) => t.status === "completed" || t.status === "deleted");
-  const pendingApprovals = getPendingApprovals(inboxes);
+  const pendingApprovals = getPendingApprovals(team.teamName, inboxes);
+
+  // Real messages from agents in team-lead's inbox (non-SDK-internal)
+  const leadInboxMessages = inboxes["team-lead"] ?? [];
+  const realLeadMessages = leadInboxMessages.filter((msg) => {
+    try {
+      const p = JSON.parse(msg.text) as Record<string, unknown>;
+      return (
+        p.type !== "idle_notification" &&
+        p.type !== "permission_request" &&
+        p.type !== "shutdown_request"
+      );
+    } catch {
+      return true;
+    }
+  });
+  // Show manual resume button when: agents sent messages, no pending approvals blocking, not all tasks done via TaskUpdate
+  const showManualResume = realLeadMessages.length > 0 && pendingApprovals.length === 0 && !allDone;
+
+  const handlePermission = async (perm: TeamPermissionRequest, behavior: "allow" | "deny") => {
+    markPermissionHandled(team.teamName, perm.requestId);
+    await window.desktop.teams.respondToPermission({
+      teamName: team.teamName,
+      agentId: perm.agentId,
+      requestId: perm.requestId,
+      behavior
+    });
+  };
+
+  const handleManualResume = async () => {
+    setResuming(true);
+    await manualResumeForTeam(team.teamName);
+    setResuming(false);
+  };
 
   return (
-    <div className="space-y-3">
-      {/* Team header */}
-      <div className="flex items-center gap-2">
+    <div className="space-y-2">
+      {/* Team header — clicável para colapsar/expandir */}
+      <button
+        type="button"
+        onClick={() => setCollapsed((c) => !c)}
+        className="flex w-full items-center gap-2 rounded-lg px-0.5 py-0.5 text-left transition hover:bg-muted/10"
+      >
         <div
           className={cn(
-            "flex size-5 items-center justify-center rounded-full",
+            "flex size-5 shrink-0 items-center justify-center rounded-full",
             allDone
               ? "bg-emerald-500/15"
               : activeTasks.length > 0
@@ -358,60 +448,107 @@ function TeamSection({ team }: { team: ActiveTeam }) {
             )}
           />
         </div>
-        <div className="flex-1 min-w-0">
+        <div className="min-w-0 flex-1">
           <span className="text-xs font-semibold text-foreground/80">{config.name}</span>
-          {config.description && (
+          {config.description && !collapsed && (
             <span className="ml-2 text-[10px] text-muted-foreground/40 truncate">
               {config.description}
             </span>
           )}
         </div>
-        {activeTasks.length > 0 && (
+        {/* Pills de estado — visíveis mesmo colapsado */}
+        {pendingApprovals.length > 0 && (
+          <span className="flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+            {pendingApprovals.length} aprovação{pendingApprovals.length !== 1 ? "s" : ""}
+          </span>
+        )}
+        {activeTasks.length > 0 && pendingApprovals.length === 0 && (
           <span className="flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-blue-500">
             <span className="size-1.5 animate-pulse rounded-full bg-blue-500" />
             {activeTasks.length} em curso
           </span>
         )}
-        {allDone && (
+        {allDone && pendingApprovals.length === 0 && (
           <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
             concluído
           </span>
         )}
-      </div>
-
-      {/* Agent grid */}
-      {(members.length > 0 || lead) && (
-        <div
+        <ChevronDown
           className={cn(
-            "grid gap-2",
-            members.length >= 3
-              ? "grid-cols-2"
-              : members.length >= 2
-                ? "grid-cols-2"
-                : "grid-cols-1"
+            "size-3 shrink-0 text-muted-foreground/40 transition-transform duration-200",
+            collapsed && "-rotate-90"
           )}
-        >
-          {/* Lead card (if has tasks or messages) */}
-          {lead && (tasks.some((t) => t.owner === lead.name) || inboxes[lead.name]?.length) ? (
-            <AgentCard
-              key={lead.agentId}
-              member={lead}
-              tasks={tasks}
-              messages={inboxes[lead.name] ?? []}
-            />
-          ) : null}
-          {members.map((m) => (
-            <AgentCard key={m.agentId} member={m} tasks={tasks} messages={inboxes[m.name] ?? []} />
-          ))}
+        />
+      </button>
+
+      {/* Aprovações pendentes — sempre visíveis mesmo colapsado */}
+      {pendingApprovals.map((perm) => {
+        const approval: PendingApproval = {
+          approvalId: perm.requestId,
+          toolName: perm.toolName,
+          input: perm.input
+        };
+        return (
+          <ToolApproval
+            key={perm.requestId}
+            approval={approval}
+            onApprove={async (_, input) => handlePermission({ ...perm, input }, "allow")}
+            onDeny={async () => handlePermission(perm, "deny")}
+          />
+        );
+      })}
+
+      {/* Corpo colapsável */}
+      {!collapsed && (
+        <div className="space-y-3">
+          {/* Agent grid */}
+          {(members.length > 0 || lead) && (
+            <div className={cn("grid gap-2", members.length >= 2 ? "grid-cols-2" : "grid-cols-1")}>
+              {/* Lead card (se tiver tasks ou mensagens) */}
+              {lead && (tasks.some((t) => t.owner === lead.name) || inboxes[lead.name]?.length) ? (
+                <AgentCard
+                  key={lead.agentId}
+                  member={lead}
+                  tasks={tasks}
+                  messages={inboxes[lead.name] ?? []}
+                  teamName={team.teamName}
+                />
+              ) : null}
+              {members.map((m) => (
+                <AgentCard
+                  key={m.agentId}
+                  member={m}
+                  tasks={tasks}
+                  messages={inboxes[m.name] ?? []}
+                  teamName={team.teamName}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Task board */}
+          {tasks.length > 0 && <TaskBoard tasks={tasks} />}
+
+          {/* Manual resume — fallback quando agentes reportaram mas não chamaram TaskUpdate */}
+          {showManualResume && (
+            <button
+              className={cn(
+                "flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.04] px-3 py-2 text-xs font-semibold text-emerald-600 transition dark:text-emerald-400",
+                resuming ? "opacity-50" : "hover:bg-emerald-500/10"
+              )}
+              disabled={resuming}
+              onClick={() => void handleManualResume()}
+              type="button"
+            >
+              {resuming ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <ArrowDownToLine className="size-3.5" />
+              )}
+              {resuming ? "A retomar sessão…" : "Receber resultados"}
+            </button>
+          )}
         </div>
-      )}
-
-      {/* Task board */}
-      {tasks.length > 0 && <TaskBoard tasks={tasks} />}
-
-      {/* Pending tool approvals — agents blocked waiting for team-lead */}
-      {pendingApprovals.length > 0 && (
-        <PendingApprovals teamName={team.teamName} approvals={pendingApprovals} />
       )}
     </div>
   );

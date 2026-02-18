@@ -78,6 +78,13 @@ export function Sidebar({
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const setActiveSessionId = useChatStore((s) => s.setActiveSessionId);
   const renameSession = useChatStore((s) => s.renameSession);
+  const deleteSession = useChatStore((s) => s.deleteSession);
+
+  // Determine if the currently active session is running (blocks new session creation)
+  const activeThread = threads.find((t) => t.id === activeThreadId);
+  const activeSession = activeThread?.sessions.find((s) => s.id === activeSessionId);
+  const isActiveSessionRunning =
+    activeSession?.status === "running" || activeSession?.status === "awaiting_approval";
 
   const [editingSession, setEditingSession] = useState<{
     threadId: string;
@@ -335,23 +342,33 @@ export function Sidebar({
                   {/* Session list */}
                   {!isCollapsed && (
                     <div className="ml-5 border-l border-border/40 pl-2 mt-0.5 mb-1 space-y-0.5">
-                      {/* Nova sessão — sempre primeiro */}
-                      <button
-                        className={cn(
-                          "flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition",
-                          isActive && !activeSessionId
-                            ? "bg-foreground/8 text-foreground font-medium"
-                            : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
-                        )}
-                        onClick={() => {
-                          setActiveThreadId(thread.id);
-                          setActiveSessionId("");
-                        }}
-                        type="button"
-                      >
-                        <Plus className="size-3 shrink-0 opacity-60" />
-                        <span className="flex-1 truncate leading-snug">Nova sessão</span>
-                      </button>
+                      {/* Nova sessão — desactivado se há sessão activa nesta thread */}
+                      {(() => {
+                        const threadIsRunning = isActive && isActiveSessionRunning;
+                        return (
+                          <button
+                            className={cn(
+                              "flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition",
+                              isActive && !activeSessionId
+                                ? "bg-foreground/8 text-foreground font-medium"
+                                : "text-muted-foreground hover:text-foreground hover:bg-foreground/5",
+                              threadIsRunning &&
+                                "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-muted-foreground"
+                            )}
+                            disabled={threadIsRunning}
+                            onClick={() => {
+                              if (threadIsRunning) return;
+                              setActiveThreadId(thread.id);
+                              setActiveSessionId("");
+                            }}
+                            title={threadIsRunning ? "Aguarda o fim da sessão activa" : undefined}
+                            type="button"
+                          >
+                            <Plus className="size-3 shrink-0 opacity-60" />
+                            <span className="flex-1 truncate leading-snug">Nova sessão</span>
+                          </button>
+                        );
+                      })()}
 
                       {[...thread.sessions]
                         .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -392,37 +409,55 @@ export function Sidebar({
                             );
                           }
 
+                          const isRunning =
+                            session.status === "running" || session.status === "awaiting_approval";
                           return (
-                            <button
-                              key={session.id}
-                              className={cn(
-                                "flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition",
-                                isActive
-                                  ? "text-foreground/90 hover:bg-foreground/5"
-                                  : "text-muted-foreground hover:text-foreground hover:bg-foreground/5",
-                                sessionStatusClass(session.status)
+                            <div key={session.id} className="group/sess flex items-center gap-0.5">
+                              <button
+                                className={cn(
+                                  "flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition",
+                                  isActive
+                                    ? "text-foreground/90 hover:bg-foreground/5"
+                                    : "text-muted-foreground hover:text-foreground hover:bg-foreground/5",
+                                  sessionStatusClass(session.status)
+                                )}
+                                onClick={() => {
+                                  setActiveThreadId(thread.id);
+                                  setActiveSessionId(session.id);
+                                }}
+                                onDoubleClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingSession({
+                                    threadId: thread.id,
+                                    sessionId: session.id,
+                                    value: session.title
+                                  });
+                                  setTimeout(() => editInputRef.current?.select(), 0);
+                                }}
+                                type="button"
+                              >
+                                <MessageSquare className="size-3 shrink-0 opacity-50" />
+                                <span className="flex-1 truncate leading-snug">
+                                  {session.title}
+                                </span>
+                                <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/50">
+                                  {timeAgo(session.updatedAt)}
+                                </span>
+                              </button>
+                              {!isRunning && (
+                                <button
+                                  className="invisible size-5 shrink-0 inline-flex items-center justify-center rounded text-muted-foreground/40 transition hover:bg-destructive/10 hover:text-destructive group-hover/sess:visible"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    deleteSession(thread.id, session.id);
+                                  }}
+                                  title="Apagar sessão"
+                                  type="button"
+                                >
+                                  <Trash2 className="size-2.5" />
+                                </button>
                               )}
-                              onClick={() => {
-                                setActiveThreadId(thread.id);
-                                setActiveSessionId(session.id);
-                              }}
-                              onDoubleClick={(e) => {
-                                e.stopPropagation();
-                                setEditingSession({
-                                  threadId: thread.id,
-                                  sessionId: session.id,
-                                  value: session.title
-                                });
-                                setTimeout(() => editInputRef.current?.select(), 0);
-                              }}
-                              type="button"
-                            >
-                              <MessageSquare className="size-3 shrink-0 opacity-50" />
-                              <span className="flex-1 truncate leading-snug">{session.title}</span>
-                              <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/50">
-                                {timeAgo(session.updatedAt)}
-                              </span>
-                            </button>
+                            </div>
                           );
                         })}
                     </div>

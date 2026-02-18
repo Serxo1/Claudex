@@ -90,6 +90,9 @@ contextBridge.exposeInMainWorld("desktop", {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on("teams:allDone", listener);
       return () => ipcRenderer.removeListener("teams:allDone", listener);
-    }
+    },
+    respondToPermission: (payload) => ipcRenderer.invoke("teams:respondToPermission", payload),
+    sendMessage: (payload) => ipcRenderer.invoke("teams:sendMessage", payload),
+    deleteTeam: (teamName) => ipcRenderer.invoke("teams:deleteTeam", teamName)
   }
 });

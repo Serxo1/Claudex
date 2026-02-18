@@ -175,8 +175,9 @@ export function SessionStack({
         ) : (
           <div className="flex min-h-0 flex-1 flex-col">
             <SessionHeader session={currentSession} threadTitle={thread.title} />
-            <div className="min-h-0 flex-1 overflow-auto">
+            <div className="min-h-0 flex-1 flex flex-col">
               <ChatMessages
+                key={currentSession.id}
                 chatContainerMax={chatContainerMax}
                 session={currentSession}
                 showCommits={false}

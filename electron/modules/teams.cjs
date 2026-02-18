@@ -27,6 +27,7 @@ const _state = new Map();
 // Teams for which we already fired "allDone" — avoid repeat notifications
 const _notifiedComplete = new Set();
 
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -121,12 +122,51 @@ function emitFullSnapshot(teamName) {
   _state.set(teamName, snap);
   send("teams:snapshot", { teamName, ...snap });
 
-  // Fire "allDone" once when all tasks (≥1) reach completed/deleted
-  if (!_notifiedComplete.has(teamName) && snap.tasks.length > 0) {
-    const pending = snap.tasks.filter(
-      (t) => t.status !== "completed" && t.status !== "deleted"
-    );
-    if (pending.length === 0) {
+  // Fire "allDone" once — two conditions (whichever comes first):
+  // 1. All tasks (≥1) reached completed/deleted status (agent called TaskUpdate)
+  // 2. All non-lead members have sent at least one real message to team-lead inbox
+  //    (agent reported results but forgot/skipped TaskUpdate)
+  if (!_notifiedComplete.has(teamName)) {
+    let shouldFire = false;
+
+    // Condition 1: task-status-based
+    if (snap.tasks.length > 0) {
+      const pending = snap.tasks.filter(
+        (t) => t.status !== "completed" && t.status !== "deleted"
+      );
+      if (pending.length === 0) shouldFire = true;
+    }
+
+    // Condition 2: inbox-based (all non-lead agents reported back)
+    if (!shouldFire && snap.config && Array.isArray(snap.config.members)) {
+      const nonLeadMembers = snap.config.members.filter(
+        (m) => m.agentType !== "team-lead"
+      );
+      if (nonLeadMembers.length > 0) {
+        const leadInbox = (snap.inboxes && snap.inboxes["team-lead"]) || [];
+        const realMsgSenders = new Set(
+          leadInbox
+            .filter((msg) => {
+              try {
+                const p = JSON.parse(msg.text);
+                return (
+                  p.type !== "idle_notification" &&
+                  p.type !== "permission_request" &&
+                  p.type !== "shutdown_request"
+                );
+              } catch {
+                return true; // plain text = real message
+              }
+            })
+            .map((msg) => msg.from)
+        );
+        if (nonLeadMembers.every((m) => realMsgSenders.has(m.name))) {
+          shouldFire = true;
+        }
+      }
+    }
+
+    if (shouldFire) {
       _notifiedComplete.add(teamName);
       send("teams:allDone", { teamName, ...snap });
     }
@@ -149,6 +189,7 @@ function watchPath(watchKey, dirPath, callback) {
     // path may not be accessible
   }
 }
+
 
 function startTeamWatch(teamName) {
   if (_watchers.has(`team:${teamName}`)) return;
@@ -230,6 +271,15 @@ function init(webContents) {
  */
 function refreshTeam(teamName) {
   if (!teamName) return;
+  // Limpar estado para permitir allDone numa equipa recriada
+  _notifiedComplete.delete(teamName);
+  // Fechar watchers antigos (podem estar obsoletos após TeamDelete)
+  for (const key of [`team:${teamName}`, `tasks:${teamName}`]) {
+    if (_watchers.has(key)) {
+      try { _watchers.get(key).close(); } catch {}
+      _watchers.delete(key);
+    }
+  }
   startTeamWatch(teamName);
 }
 
@@ -271,4 +321,102 @@ function destroy() {
   _webContents = null;
 }
 
-module.exports = { init, refreshTeam, listTeams, getTeamSnapshot, destroy };
+/**
+ * Respond to a permission_request from a background agent.
+ * Writes a permission_response to the agent's own inbox.
+ *
+ * @param {string} teamName
+ * @param {string} agentId  - e.g. "tool-checker" or "tool-checker@team-name"
+ * @param {string} requestId - the request_id from the permission_request message
+ * @param {"allow"|"deny"} behavior
+ */
+function respondToPermission(teamName, agentId, requestId, behavior) {
+  // Strip @team suffix if present
+  const shortName = agentId.includes("@") ? agentId.split("@")[0] : agentId;
+  const inboxPath = path.join(TEAMS_DIR, teamName, "inboxes", `${shortName}.json`);
+
+  const responsePayload =
+    behavior === "allow"
+      ? {
+          type: "permission_response",
+          request_id: requestId,
+          subtype: "success",
+          response: { updated_input: null, permission_updates: [] }
+        }
+      : {
+          type: "permission_response",
+          request_id: requestId,
+          subtype: "error",
+          error: "Permission denied by user"
+        };
+
+  const message = {
+    from: "team-lead",
+    text: JSON.stringify(responsePayload),
+    timestamp: new Date().toISOString(),
+    read: false
+  };
+
+  try {
+    const existing = safeReadJson(inboxPath);
+    const arr = Array.isArray(existing) ? existing : [];
+    arr.push(message);
+    fs.writeFileSync(inboxPath, JSON.stringify(arr, null, 2), "utf8");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+/**
+ * Remove os directórios da equipa (~/.claude/teams/{team} e ~/.claude/tasks/{team}).
+ * Equivalente ao que a tool TeamDelete faz, mas chamado pelo nosso código.
+ */
+function deleteTeam(teamName) {
+  if (!teamName) return { ok: false, error: "teamName required" };
+  // Fechar watchers antes de apagar
+  for (const key of [`team:${teamName}`, `tasks:${teamName}`]) {
+    if (_watchers.has(key)) {
+      try { _watchers.get(key).close(); } catch {}
+      _watchers.delete(key);
+    }
+  }
+  _notifiedComplete.delete(teamName);
+  _state.delete(teamName);
+  try {
+    const teamDir  = path.join(TEAMS_DIR, teamName);
+    const tasksDir = path.join(TASKS_DIR, teamName);
+    if (fs.existsSync(teamDir))  fs.rmSync(teamDir,  { recursive: true, force: true });
+    if (fs.existsSync(tasksDir)) fs.rmSync(tasksDir, { recursive: true, force: true });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+/**
+ * Envia uma mensagem de texto do utilizador para a inbox de um agente.
+ * O agente recebe como tipo "message" com from="user".
+ */
+function sendMessageToAgent(teamName, agentName, content) {
+  const inboxPath = path.join(TEAMS_DIR, teamName, "inboxes", `${agentName}.json`);
+  const message = {
+    from: "user",
+    text: JSON.stringify({ type: "message", content, from: "user" }),
+    summary: content.slice(0, 100),
+    timestamp: new Date().toISOString(),
+    read: false
+  };
+  ensureDir(path.dirname(inboxPath));
+  try {
+    const existing = safeReadJson(inboxPath);
+    const arr = Array.isArray(existing) ? existing : [];
+    arr.push(message);
+    fs.writeFileSync(inboxPath, JSON.stringify(arr, null, 2), "utf8");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+module.exports = { init, refreshTeam, listTeams, getTeamSnapshot, respondToPermission, sendMessageToAgent, deleteTeam, destroy };
