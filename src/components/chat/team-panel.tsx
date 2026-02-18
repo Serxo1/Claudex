@@ -5,6 +5,47 @@ import { useTeamStore, type ActiveTeam } from "@/stores/team-store";
 import type { TeamTask, TeamInboxMessage } from "@/lib/chat-types";
 
 // ---------------------------------------------------------------------------
+// Inbox message helpers
+// ---------------------------------------------------------------------------
+
+type ParsedInbox = { text: string; isSystem: boolean };
+
+/** Parse an inbox message text. Returns null to skip SDK-internal messages. */
+function parseInboxMessage(msg: TeamInboxMessage): ParsedInbox | null {
+  try {
+    const parsed = JSON.parse(msg.text) as Record<string, unknown>;
+    const type = parsed.type as string | undefined;
+    if (type === "idle_notification") return null; // skip — SDK internal
+    if (type === "permission_request") {
+      return { text: `Aguarda aprovação: ${parsed.tool_name ?? "tool"}`, isSystem: true };
+    }
+    if (type === "message" && typeof parsed.content === "string") {
+      return { text: parsed.content.slice(0, 200), isSystem: false };
+    }
+    if (type === "shutdown_request") {
+      return { text: "Pedido de encerramento", isSystem: true };
+    }
+    // Unknown JSON — show summary if available, otherwise skip
+    if (msg.summary) return { text: msg.summary, isSystem: false };
+    return null;
+  } catch {
+    // Plain text message — show it
+    return { text: msg.summary || msg.text.slice(0, 200), isSystem: false };
+  }
+}
+
+/** Find the last non-skipped message to display in the card. */
+function getLatestDisplayMessage(
+  messages: TeamInboxMessage[]
+): (TeamInboxMessage & { parsed: ParsedInbox }) | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const parsed = parseInboxMessage(messages[i]);
+    if (parsed) return { ...messages[i], parsed };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Agent card — one per team member
 // ---------------------------------------------------------------------------
 
@@ -17,13 +58,16 @@ function AgentCard({
   tasks: TeamTask[];
   messages: TeamInboxMessage[];
 }) {
-  const myTasks = tasks.filter((t) => t.owner === member.name);
+  // Match by owner OR by subject when task has no owner (lead assigned task to agent by name)
+  const myTasks = tasks.filter(
+    (t) => t.owner === member.name || (!t.owner && t.subject === member.name)
+  );
   const activeTasks = myTasks.filter((t) => t.status === "in_progress");
   const doneTasks = myTasks.filter((t) => t.status === "completed");
   const isActive = activeTasks.length > 0;
   const isLead = member.agentType === "team-lead";
 
-  const latestMessage = messages[messages.length - 1] ?? null;
+  const latestMessage = getLatestDisplayMessage(messages);
 
   return (
     <div
@@ -106,17 +150,31 @@ function AgentCard({
         </div>
       )}
 
-      {/* Latest inbox message */}
+      {/* Latest inbox message (real messages only — system noise filtered out) */}
       {latestMessage && (
-        <div className="rounded-lg border border-border/30 bg-muted/10 px-2 py-1.5">
+        <div
+          className={cn(
+            "rounded-lg border px-2 py-1.5",
+            latestMessage.parsed.isSystem
+              ? "border-border/20 bg-muted/5"
+              : "border-border/30 bg-muted/10"
+          )}
+        >
           <div className="mb-0.5 flex items-center gap-1 text-[9px] text-muted-foreground/40">
             <Mail className="size-2.5" />
             <span className="truncate">
               {latestMessage.from} → {member.name}
             </span>
           </div>
-          <p className="line-clamp-2 text-[11px] text-muted-foreground/70">
-            {latestMessage.summary || latestMessage.text.slice(0, 120)}
+          <p
+            className={cn(
+              "line-clamp-2 text-[11px]",
+              latestMessage.parsed.isSystem
+                ? "italic text-muted-foreground/40"
+                : "text-muted-foreground/70"
+            )}
+          >
+            {latestMessage.parsed.text}
           </p>
         </div>
       )}
