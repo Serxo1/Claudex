@@ -1,7 +1,8 @@
-import { useEffect } from "react";
-import { CheckCircle2, Clock3, Loader2, Mail, Users } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertTriangle, CheckCircle2, Clock3, Loader2, Mail, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTeamStore, type ActiveTeam } from "@/stores/team-store";
+import { useChatStore } from "@/stores/chat-store";
 import type { TeamTask, TeamInboxMessage } from "@/lib/chat-types";
 
 // ---------------------------------------------------------------------------
@@ -233,6 +234,91 @@ function TaskBoard({ tasks }: { tasks: TeamTask[] }) {
 }
 
 // ---------------------------------------------------------------------------
+// Pending approvals helpers
+// ---------------------------------------------------------------------------
+
+type PendingApproval = { from: string; toolName: string; description: string };
+
+/** Collect unprocessed permission_request messages from team-lead's inbox. */
+function getPendingApprovals(inboxes: Record<string, TeamInboxMessage[]>): PendingApproval[] {
+  const leadMessages = inboxes["team-lead"] ?? [];
+  const pending: PendingApproval[] = [];
+  for (const msg of leadMessages) {
+    try {
+      const p = JSON.parse(msg.text) as Record<string, unknown>;
+      if (p.type === "permission_request") {
+        pending.push({
+          from: msg.from,
+          toolName: typeof p.tool_name === "string" ? p.tool_name : "tool",
+          description: typeof p.description === "string" ? p.description : ""
+        });
+      }
+    } catch {
+      // not JSON
+    }
+  }
+  return pending;
+}
+
+function PendingApprovals({
+  teamName,
+  approvals
+}: {
+  teamName: string;
+  approvals: PendingApproval[];
+}) {
+  const [loading, setLoading] = useState(false);
+  const resumeForTeamApprovals = useChatStore((s) => s.resumeForTeamApprovals);
+
+  const uniqueAgents = [...new Set(approvals.map((a) => a.from))];
+
+  async function handleApprove() {
+    setLoading(true);
+    await resumeForTeamApprovals(teamName, uniqueAgents);
+    setLoading(false);
+  }
+
+  return (
+    <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.04] px-3 py-2.5">
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <p className="text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+            {approvals.length} aprovação{approvals.length !== 1 ? "ões" : ""} pendente
+            {approvals.length !== 1 ? "s" : ""}
+          </p>
+          <div className="space-y-0.5">
+            {approvals.map((a, i) => (
+              <p key={i} className="truncate text-[10px] text-muted-foreground/60">
+                <span className="font-medium text-foreground/50">{a.from}</span>
+                {" · "}
+                {a.toolName}
+                {a.description ? ` — ${a.description}` : ""}
+              </p>
+            ))}
+          </div>
+          <button
+            disabled={loading}
+            onClick={() => void handleApprove()}
+            className={cn(
+              "mt-1 flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] font-semibold text-amber-600 transition-opacity dark:text-amber-400",
+              loading ? "opacity-50" : "hover:bg-amber-500/20"
+            )}
+          >
+            {loading ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <AlertTriangle className="size-3" />
+            )}
+            {loading ? "A enviar…" : "Processar aprovações"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Single team section
 // ---------------------------------------------------------------------------
 
@@ -245,6 +331,7 @@ function TeamSection({ team }: { team: ActiveTeam }) {
   const activeTasks = tasks.filter((t) => t.status === "in_progress");
   const allDone =
     tasks.length > 0 && tasks.every((t) => t.status === "completed" || t.status === "deleted");
+  const pendingApprovals = getPendingApprovals(inboxes);
 
   return (
     <div className="space-y-3">
@@ -321,6 +408,11 @@ function TeamSection({ team }: { team: ActiveTeam }) {
 
       {/* Task board */}
       {tasks.length > 0 && <TaskBoard tasks={tasks} />}
+
+      {/* Pending tool approvals — agents blocked waiting for team-lead */}
+      {pendingApprovals.length > 0 && (
+        <PendingApprovals teamName={team.teamName} approvals={pendingApprovals} />
+      )}
     </div>
   );
 }

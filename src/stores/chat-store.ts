@@ -286,6 +286,7 @@ type ChatState = {
   initStreamListener: () => void;
   cleanupStreamListener: () => void;
   initTeamCompletionListener: () => () => void;
+  resumeForTeamApprovals: (teamName: string, pendingAgents: string[]) => Promise<void>;
   loadSkills: () => Promise<void>;
   onSubmit: (
     message: {
@@ -1325,6 +1326,81 @@ export const useChatStore = create<ChatState>((set, get) => ({
           useSettingsStore.getState().setStatus(messageText);
         });
     });
+  },
+
+  resumeForTeamApprovals: async (teamName, pendingAgents) => {
+    const { threads } = get();
+
+    // Find session that owns this team
+    let foundThreadId: string | null = null;
+    let foundSession: AgentSession | null = null;
+    outer: for (const thread of threads) {
+      for (const session of [...thread.sessions].reverse()) {
+        if (session.teamNames?.includes(teamName)) {
+          foundThreadId = thread.id;
+          foundSession = session;
+          break outer;
+        }
+      }
+    }
+    if (!foundThreadId || !foundSession) return;
+    if (foundSession.status === "running" || foundSession.status === "awaiting_approval") return;
+
+    const threadWorkspaceDirs = threads.find((t) => t.id === foundThreadId)?.workspaceDirs ?? [];
+
+    const agentsList = pendingAgents.join(", ");
+    const prompt =
+      `Os agentes do time "${teamName}" estão bloqueados à espera de aprovação de ferramentas.\n\n` +
+      `Agentes com pedidos pendentes: ${agentsList}\n\n` +
+      `Verifica a tua inbox do time, lê os pedidos de permissão e aprova os que são necessários para que os agentes possam continuar.`;
+
+    const userMessage = makeMessage("user", prompt);
+    const assistantMessage = makeMessage("assistant", "");
+    const sessionId = foundSession.id;
+
+    set({ activeThreadId: foundThreadId, activeSessionId: sessionId });
+    set((s) => ({
+      threads: patchSession(s.threads, foundThreadId!, sessionId, (sess) => ({
+        messages: [...sess.messages, userMessage, assistantMessage],
+        status: "running" as const,
+        isThinking: true,
+        reasoningText: "A processar aprovações pendentes...",
+        toolTimeline: [],
+        subagents: [],
+        runningStartedAt: Date.now(),
+        updatedAt: Date.now()
+      }))
+    }));
+
+    const settings = useSettingsStore.getState().settings;
+    if (!settings) return;
+
+    try {
+      const started = await window.desktop.chat.startStream({
+        messages: [{ id: userMessage.id, role: "user" as const, content: prompt }],
+        effort: undefined,
+        contextFiles: [],
+        resumeSessionId: foundSession.sessionId ?? "",
+        workspaceDirs: threadWorkspaceDirs
+      });
+      _activeStreams.set(started.requestId, { threadId: foundThreadId!, sessionId });
+      set((s) => ({
+        threads: patchSession(s.threads, foundThreadId!, sessionId, {
+          requestId: started.requestId
+        })
+      }));
+    } catch (error) {
+      const messageText = normalizeErrorMessage((error as Error).message);
+      set((s) => ({
+        threads: patchSession(s.threads, foundThreadId!, sessionId, (sess) => ({
+          messages: sess.messages.slice(0, -2),
+          status: "error" as const,
+          isThinking: false,
+          reasoningText: ""
+        }))
+      }));
+      useSettingsStore.getState().setStatus(messageText);
+    }
   },
 
   addWorkspaceDirToThread: (threadId, dir) => {
