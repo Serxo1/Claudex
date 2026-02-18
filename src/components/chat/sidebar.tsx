@@ -72,14 +72,14 @@ export function Sidebar({
 
   return (
     <aside className="absolute inset-y-0 left-0 z-40 flex h-full w-[280px] shrink-0 flex-col border-r border-border/70 bg-background/80 backdrop-blur-xl backdrop-saturate-150 lg:static lg:z-auto">
-      {/* App header */}
-      <div className="flex items-center justify-between px-4 pt-4 pb-3">
-        <div className="flex items-center gap-2">
+      {/* App header — pt-8 to clear macOS traffic lights (hiddenInset titleBar) */}
+      <div className="[-webkit-app-region:drag] flex items-center justify-between px-4 pt-8 pb-3">
+        <div className="flex items-center gap-2 [-webkit-app-region:no-drag]">
           <img alt="Logo" className="size-5 rounded-md" src={logo} />
           <span className="text-sm font-semibold tracking-tight text-foreground">Claudex</span>
         </div>
         <Button
-          className="size-7 rounded-md text-muted-foreground hover:text-foreground"
+          className="[-webkit-app-region:no-drag] size-7 rounded-md text-muted-foreground hover:text-foreground"
           onClick={onToggle}
           size="icon-xs"
           variant="ghost"

@@ -168,7 +168,7 @@ export function ChatShell() {
   const chatContainerMax = showRightPanel ? "max-w-none" : "max-w-4xl";
 
   return (
-    <main className="relative flex h-screen w-screen overflow-hidden bg-background text-foreground">
+    <main className="relative flex h-screen w-screen overflow-hidden bg-background/95 text-foreground">
       {isSidebarOpen ? (
         <button
           className="absolute inset-0 z-30 bg-black/45 lg:hidden"

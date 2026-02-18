@@ -71,6 +71,7 @@ setWorkspaceDir(WORKSPACE_DIR);
 settings.init(app, safeStorage);
 
 async function createWindow() {
+  const isDarwin = process.platform === "darwin";
   const mainWindow = new BrowserWindow({
     width: 1400,
     height: 920,
@@ -78,6 +79,15 @@ async function createWindow() {
     minHeight: 720,
     title: "Claude Desktop MVP",
     icon: path.join(__dirname, "../public/logo.png"),
+    ...(isDarwin
+      ? {
+          vibrancy: "under-window",
+          visualEffectState: "active",
+          transparent: true,
+          titleBarStyle: "hiddenInset",
+          trafficLightPosition: { x: 16, y: 16 }
+        }
+      : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
