@@ -278,11 +278,21 @@ type TeamPanelProps = {
 export function TeamPanel({ teamNames }: TeamPanelProps) {
   const teams = useTeamStore((s) => s.teams);
   const initListener = useTeamStore((s) => s.initListener);
+  const trackTeam = useTeamStore((s) => s.trackTeam);
 
   useEffect(() => {
     const unsub = initListener();
     return unsub;
   }, [initListener]);
+
+  // Re-track teams on mount (handles page reload where teamNames come from localStorage
+  // but sessionTeams in the store is empty, so snapshots would be rejected)
+  useEffect(() => {
+    for (const name of teamNames) {
+      trackTeam(name);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Only show teams that belong to this session
   const activeTeams = teamNames

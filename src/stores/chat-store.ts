@@ -136,6 +136,9 @@ function sanitizeSession(raw: Record<string, unknown>): AgentSession | null {
     permissionDenials: Array.isArray(raw.permissionDenials)
       ? (raw.permissionDenials as string[]).filter((d) => typeof d === "string")
       : [],
+    teamNames: Array.isArray(raw.teamNames)
+      ? (raw.teamNames as string[]).filter((v) => typeof v === "string")
+      : undefined,
     createdAt: typeof raw.createdAt === "number" ? (raw.createdAt as number) : Date.now(),
     updatedAt: typeof raw.updatedAt === "number" ? (raw.updatedAt as number) : Date.now()
   };
@@ -567,6 +570,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       if (event.type === "toolUse") {
+        // TeamCreate: register team BEFORE the main set() to avoid state overwrite
+        if (event.name === "TeamCreate") {
+          const teamName = (event.input as Record<string, unknown> | null)?.team_name;
+          if (typeof teamName === "string" && teamName) {
+            set((state) => ({
+              threads: patchSession(state.threads, threadId, sessionId, (sess) => ({
+                teamNames: [...(sess.teamNames ?? []), teamName].filter(
+                  (v, i, a) => a.indexOf(v) === i
+                )
+              }))
+            }));
+            // Give the SDK ~600 ms to write the config file, then start watching
+            setTimeout(() => {
+              useTeamStore.getState().trackTeam(teamName);
+            }, 600);
+          }
+        }
+
         set((state) => ({
           threads: patchSession(state.threads, threadId, sessionId, (s) => {
             const currentItems = s.toolTimeline;
@@ -601,24 +622,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
                       finishedAt: null
                     }
                   ];
-            // When TeamCreate is used, register the team for this session
-            if (event.name === "TeamCreate") {
-              const teamName = (event.input as Record<string, unknown> | null)?.team_name;
-              if (typeof teamName === "string" && teamName) {
-                // Store team name in this session so the UI knows which teams belong here
-                set((state) => ({
-                  threads: patchSession(state.threads, threadId, sessionId, (sess) => ({
-                    teamNames: [...(sess.teamNames ?? []), teamName].filter(
-                      (v, i, a) => a.indexOf(v) === i
-                    )
-                  }))
-                }));
-                // Give the SDK ~600 ms to write the config file, then track
-                setTimeout(() => {
-                  useTeamStore.getState().trackTeam(teamName);
-                }, 600);
-              }
-            }
 
             // Track Task tool uses as subagents
             let nextSubagents = s.subagents;
