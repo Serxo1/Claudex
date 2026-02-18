@@ -8,7 +8,15 @@ import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { ChevronDownIcon } from "lucide-react";
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useState,
+  useEffect,
+  useRef
+} from "react";
 
 export interface WebPreviewContextValue {
   url: string;
@@ -139,6 +147,7 @@ export const WebPreviewUrl = ({ value, onChange, onKeyDown, ...props }: WebPrevi
       if (event.key === "Enter") {
         const target = event.target as HTMLInputElement;
         setUrl(target.value);
+        target.blur();
       }
       onKeyDown?.(event);
     },
@@ -162,18 +171,52 @@ export type WebPreviewBodyProps = ComponentProps<"iframe"> & {
 };
 
 export const WebPreviewBody = ({ className, loading, src, ...props }: WebPreviewBodyProps) => {
-  const { url } = useWebPreview();
+  const { url, setUrl } = useWebPreview();
+  const webviewRef = useRef<any>(null);
+
+  useEffect(() => {
+    const webview = webviewRef.current;
+    if (!webview) return;
+
+    const handleNavigate = (event: any) => {
+      if (event.url && event.url !== url) {
+        setUrl(event.url);
+      }
+    };
+
+    webview.addEventListener("did-navigate", handleNavigate);
+    webview.addEventListener("did-navigate-in-page", handleNavigate);
+
+    return () => {
+      webview.removeEventListener("did-navigate", handleNavigate);
+      webview.removeEventListener("did-navigate-in-page", handleNavigate);
+    };
+  }, [url, setUrl]);
+
+  const isElectron =
+    typeof navigator !== "undefined" && navigator.userAgent.toLowerCase().includes("electron");
 
   return (
-    <div className="flex-1">
-      <iframe
-        className={cn("size-full", className)}
-        // oxlint-disable-next-line eslint-plugin-react(iframe-missing-sandbox)
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
-        src={(src ?? url) || undefined}
-        title="Preview"
-        {...props}
-      />
+    <div className="flex-1 overflow-hidden">
+      {isElectron ? (
+        <webview
+          allowpopups={true}
+          className={cn("flex size-full", className)}
+          partition="persist:preview"
+          ref={webviewRef}
+          src={(src ?? url) || "about:blank"}
+          style={{ width: "100%", height: "100%" }}
+        />
+      ) : (
+        <iframe
+          className={cn("size-full", className)}
+          // oxlint-disable-next-line eslint-plugin-react(iframe-missing-sandbox)
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
+          src={(src ?? url) || undefined}
+          title="Preview"
+          {...props}
+        />
+      )}
       {loading}
     </div>
   );

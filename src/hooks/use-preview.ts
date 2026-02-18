@@ -12,8 +12,8 @@ export interface UsePreviewReturn {
 }
 
 export function usePreview(): UsePreviewReturn {
-  const [previewUrl, setPreviewUrl] = useState("http://localhost:5173");
-  const [previewHistory, setPreviewHistory] = useState<string[]>(["http://localhost:5173"]);
+  const [previewUrl, setPreviewUrl] = useState("https://www.google.com");
+  const [previewHistory, setPreviewHistory] = useState<string[]>(["https://www.google.com"]);
   const [previewHistoryIndex, setPreviewHistoryIndex] = useState(0);
   const [previewKey, setPreviewKey] = useState(0);
 
