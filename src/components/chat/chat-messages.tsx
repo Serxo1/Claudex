@@ -324,7 +324,9 @@ export function ChatMessages({
           </div>
         ) : null}
 
-        <TeamPanel />
+        {session.teamNames && session.teamNames.length > 0 ? (
+          <TeamPanel teamNames={session.teamNames} />
+        ) : null}
       </ConversationContent>
     </Conversation>
   );

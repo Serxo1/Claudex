@@ -17,15 +17,14 @@ export type ActiveTeam = {
 
 type TeamStore = {
   teams: Record<string, ActiveTeam>;
+  /** Teams explicitly triggered in this session (via TeamCreate tool) */
+  sessionTeams: Set<string>;
 
-  // Called when electron emits a full snapshot
+  // Called when electron emits a full snapshot — only stored if team is in sessionTeams
   applySnapshot: (payload: TeamSnapshot & { teamName: string }) => void;
 
-  // Load initial team list on startup
-  loadInitial: () => Promise<void>;
-
-  // Kick off a refresh for a specific team
-  refresh: (teamName: string) => void;
+  // Register a new team for this session and load its snapshot
+  trackTeam: (teamName: string) => void;
 
   // Subscribe to live events from electron
   initListener: () => () => void;
@@ -37,9 +36,13 @@ type TeamStore = {
 
 export const useTeamStore = create<TeamStore>((set, get) => ({
   teams: {},
+  sessionTeams: new Set(),
 
   applySnapshot: (payload) => {
-    const { teamName, config, tasks, inboxes } = payload;
+    const { teamName } = payload;
+    // Only show teams that were explicitly created/triggered in this session
+    if (!get().sessionTeams.has(teamName)) return;
+    const { config, tasks, inboxes } = payload;
     set((state) => ({
       teams: {
         ...state.teams,
@@ -54,30 +57,22 @@ export const useTeamStore = create<TeamStore>((set, get) => ({
     }));
   },
 
-  loadInitial: async () => {
-    try {
-      const list = await window.desktop.teams.list();
-      for (const { teamName } of list) {
-        const snap = await window.desktop.teams.getSnapshot(teamName);
-        if (snap) {
-          get().applySnapshot({ ...snap, teamName });
-        }
-      }
-    } catch {
-      // Desktop API not ready yet
-    }
-  },
-
-  refresh: (teamName) => {
+  trackTeam: (teamName) => {
+    if (!teamName) return;
+    // Register as a session team so snapshots are accepted
+    set((state) => ({ sessionTeams: new Set([...state.sessionTeams, teamName]) }));
+    // Load initial snapshot and start watching
     void window.desktop.teams.refresh(teamName);
+    void window.desktop.teams.getSnapshot(teamName).then((snap) => {
+      if (snap) get().applySnapshot({ ...snap, teamName });
+    });
   },
 
   initListener: () => {
+    // Only listen for live snapshot events — no auto-loading of old teams
     const unsub = window.desktop.teams.onSnapshot((payload) => {
       get().applySnapshot(payload);
     });
-    // Load existing teams on init
-    void get().loadInitial();
     return unsub;
   }
 }));

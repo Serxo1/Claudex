@@ -367,6 +367,8 @@ export type AgentSession = {
   reasoningText: string;
   compactCount: number;
   permissionDenials: string[];
+  /** Team names created in this session via TeamCreate tool */
+  teamNames?: string[];
   createdAt: number;
   updatedAt: number;
 };

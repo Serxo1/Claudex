@@ -22,6 +22,7 @@ import { useSettingsStore } from "@/stores/settings-store";
 import { useGitStore } from "@/stores/git-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { usePermissionsStore } from "@/stores/permissions-store";
+import { useTeamStore } from "@/stores/team-store";
 
 // ---------------------------------------------------------------------------
 // Module-level stream tracker (not reactive — just for routing events)
@@ -600,13 +601,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
                       finishedAt: null
                     }
                   ];
-            // When TeamCreate is used, kick the teams watcher
+            // When TeamCreate is used, register the team for this session
             if (event.name === "TeamCreate") {
               const teamName = (event.input as Record<string, unknown> | null)?.team_name;
               if (typeof teamName === "string" && teamName) {
-                // Give the SDK ~500 ms to write the config file, then refresh
+                // Store team name in this session so the UI knows which teams belong here
+                set((state) => ({
+                  threads: patchSession(state.threads, threadId, sessionId, (sess) => ({
+                    teamNames: [...(sess.teamNames ?? []), teamName].filter(
+                      (v, i, a) => a.indexOf(v) === i
+                    )
+                  }))
+                }));
+                // Give the SDK ~600 ms to write the config file, then track
                 setTimeout(() => {
-                  void window.desktop.teams?.refresh(teamName);
+                  useTeamStore.getState().trackTeam(teamName);
                 }, 600);
               }
             }

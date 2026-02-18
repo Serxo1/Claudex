@@ -268,10 +268,14 @@ function TeamSection({ team }: { team: ActiveTeam }) {
 }
 
 // ---------------------------------------------------------------------------
-// TeamPanel — root component, subscribes to store
+// TeamPanel — root component, scoped to teams created in this session
 // ---------------------------------------------------------------------------
 
-export function TeamPanel() {
+type TeamPanelProps = {
+  teamNames: string[];
+};
+
+export function TeamPanel({ teamNames }: TeamPanelProps) {
   const teams = useTeamStore((s) => s.teams);
   const initListener = useTeamStore((s) => s.initListener);
 
@@ -280,7 +284,11 @@ export function TeamPanel() {
     return unsub;
   }, [initListener]);
 
-  const activeTeams = Object.values(teams).sort((a, b) => b.updatedAt - a.updatedAt);
+  // Only show teams that belong to this session
+  const activeTeams = teamNames
+    .map((name) => teams[name])
+    .filter(Boolean)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
 
   if (activeTeams.length === 0) return null;
 
