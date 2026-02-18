@@ -54,6 +54,7 @@ export function ChatShell() {
   const setActiveThreadId = useChatStore((s) => s.setActiveThreadId);
   const initStreamListener = useChatStore((s) => s.initStreamListener);
   const cleanupStreamListener = useChatStore((s) => s.cleanupStreamListener);
+  const initTeamCompletionListener = useChatStore((s) => s.initTeamCompletionListener);
   const persistThreads = useChatStore((s) => s.persistThreads);
   const loadSkills = useChatStore((s) => s.loadSkills);
 
@@ -91,6 +92,12 @@ export function ChatShell() {
     initStreamListener();
     return () => cleanupStreamListener();
   }, [initStreamListener, cleanupStreamListener]);
+
+  // Auto-resume session when a team finishes all tasks
+  useEffect(() => {
+    const unsub = initTeamCompletionListener();
+    return unsub;
+  }, [initTeamCompletionListener]);
 
   // Load skills from installed plugins
   useEffect(() => {

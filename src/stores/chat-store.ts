@@ -6,6 +6,8 @@ import type {
   ContextAttachment,
   PendingApproval,
   PendingQuestion,
+  TeamInboxMessage,
+  TeamSnapshot,
   Thread,
   ToolTimelineItem
 } from "@/lib/chat-types";
@@ -283,6 +285,7 @@ type ChatState = {
   persistThreads: () => void;
   initStreamListener: () => void;
   cleanupStreamListener: () => void;
+  initTeamCompletionListener: () => () => void;
   loadSkills: () => Promise<void>;
   onSubmit: (
     message: {
@@ -1210,6 +1213,118 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }));
       useSettingsStore.getState().setStatus(messageText);
     }
+  },
+
+  // ---------------------------------------------------------------------------
+  // Team completion — auto-resume main session when all tasks finish
+  // ---------------------------------------------------------------------------
+
+  initTeamCompletionListener: () => {
+    return window.desktop.teams.onAllDone((payload) => {
+      const snap = payload as TeamSnapshot & { teamName: string };
+      const teamName = snap.teamName;
+
+      const { threads } = get();
+
+      // Find the thread+session that owns this team
+      let foundThreadId: string | null = null;
+      let foundSession: AgentSession | null = null;
+      outer: for (const thread of threads) {
+        for (const session of [...thread.sessions].reverse()) {
+          if (session.teamNames?.includes(teamName)) {
+            foundThreadId = thread.id;
+            foundSession = session;
+            break outer;
+          }
+        }
+      }
+      if (!foundThreadId || !foundSession) return;
+      // Don't interrupt an active session
+      if (foundSession.status === "running" || foundSession.status === "awaiting_approval") return;
+
+      const threadWorkspaceDirs = threads.find((t) => t.id === foundThreadId)?.workspaceDirs ?? [];
+
+      // Collect real messages from team-lead inbox (skip SDK internals)
+      const leadInbox: TeamInboxMessage[] = snap.inboxes?.["team-lead"] ?? [];
+      const realMessages = leadInbox.filter((msg) => {
+        try {
+          const p = JSON.parse(msg.text) as Record<string, unknown>;
+          return p.type !== "idle_notification" && p.type !== "permission_request";
+        } catch {
+          return true;
+        }
+      });
+
+      // Build inbox summary text
+      const inboxText =
+        realMessages.length > 0
+          ? realMessages
+              .map((m) => {
+                const text = m.summary ?? m.text.slice(0, 600);
+                return `**${m.from}:** ${text}`;
+              })
+              .join("\n\n")
+          : "(sem mensagens dos agentes)";
+
+      const prompt =
+        `Os agentes do time "${teamName}" terminaram todas as tarefas.\n\n` +
+        `Mensagens recebidas:\n\n${inboxText}\n\n` +
+        `Resume os resultados e informa o utilizador do que foi concluído.`;
+
+      const userMessage = makeMessage("user", prompt);
+      const assistantMessage = makeMessage("assistant", "");
+      const sessionId = foundSession.id;
+
+      // Navigate to that thread + session
+      set({ activeThreadId: foundThreadId, activeSessionId: sessionId });
+
+      // Add messages and mark running
+      set((s) => ({
+        threads: patchSession(s.threads, foundThreadId!, sessionId, (sess) => ({
+          messages: [...sess.messages, userMessage, assistantMessage],
+          status: "running" as const,
+          isThinking: true,
+          reasoningText: "Recebendo resultados da equipa...",
+          toolTimeline: [],
+          subagents: [],
+          runningStartedAt: Date.now(),
+          updatedAt: Date.now()
+        }))
+      }));
+
+      const settings = useSettingsStore.getState().settings;
+      if (!settings) return;
+
+      void window.desktop.chat
+        .startStream({
+          messages: [{ id: userMessage.id, role: "user" as const, content: prompt }],
+          effort: undefined,
+          contextFiles: [],
+          resumeSessionId: foundSession.sessionId ?? "",
+          workspaceDirs: threadWorkspaceDirs
+        })
+        .then((started) => {
+          _activeStreams.set(started.requestId, { threadId: foundThreadId!, sessionId });
+          set((s) => ({
+            threads: patchSession(s.threads, foundThreadId!, sessionId, {
+              requestId: started.requestId
+            })
+          }));
+          useSettingsStore.getState().setStatus(`Equipa ${teamName} concluída — a resumir...`);
+        })
+        .catch((error) => {
+          const messageText = normalizeErrorMessage((error as Error).message);
+          set((s) => ({
+            threads: patchSession(s.threads, foundThreadId!, sessionId, (sess) => ({
+              messages: sess.messages.slice(0, -2),
+              status: "error" as const,
+              isThinking: false,
+              reasoningText: ""
+            }))
+          }));
+          useSettingsStore.getState().setStatus(messageText);
+        });
+    });
   },
 
   addWorkspaceDirToThread: (threadId, dir) => {

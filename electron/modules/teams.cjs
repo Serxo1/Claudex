@@ -24,6 +24,9 @@ const _watchers = new Map(); // key → FSWatcher
 // In-memory cache: teamName → { config, tasks, inboxes }
 const _state = new Map();
 
+// Teams for which we already fired "allDone" — avoid repeat notifications
+const _notifiedComplete = new Set();
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -117,6 +120,17 @@ function emitFullSnapshot(teamName) {
   const snap = snapshotTeam(teamName);
   _state.set(teamName, snap);
   send("teams:snapshot", { teamName, ...snap });
+
+  // Fire "allDone" once when all tasks (≥1) reach completed/deleted
+  if (!_notifiedComplete.has(teamName) && snap.tasks.length > 0) {
+    const pending = snap.tasks.filter(
+      (t) => t.status !== "completed" && t.status !== "deleted"
+    );
+    if (pending.length === 0) {
+      _notifiedComplete.add(teamName);
+      send("teams:allDone", { teamName, ...snap });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +267,7 @@ function destroy() {
   }
   _watchers.clear();
   _state.clear();
+  _notifiedComplete.clear();
   _webContents = null;
 }
 

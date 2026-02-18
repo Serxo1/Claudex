@@ -147,6 +147,7 @@ declare global {
         onSnapshot: (
           callback: (payload: TeamSnapshot & { teamName: string }) => void
         ) => () => void;
+        onAllDone: (callback: (payload: TeamSnapshot & { teamName: string }) => void) => () => void;
       };
     };
   }

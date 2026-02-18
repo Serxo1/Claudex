@@ -85,6 +85,11 @@ contextBridge.exposeInMainWorld("desktop", {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on("teams:snapshot", listener);
       return () => ipcRenderer.removeListener("teams:snapshot", listener);
+    },
+    onAllDone: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("teams:allDone", listener);
+      return () => ipcRenderer.removeListener("teams:allDone", listener);
     }
   }
 });
