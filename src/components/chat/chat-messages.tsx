@@ -131,8 +131,8 @@ export function ChatMessages({ activePage, chatContainerMax }: ChatMessagesProps
               className={cn(
                 "max-w-[min(880px,100%)] rounded-2xl border px-4 py-3 shadow-sm",
                 message.role === "assistant"
-                  ? "border-border/70 bg-background text-white"
-                  : "border-white/10 bg-card text-foreground"
+                  ? "border-border/70 bg-background text-foreground"
+                  : "border-border/50 bg-card text-foreground"
               )}
             >
               {message.role === "assistant" && message.id === executionAssistantMessageId ? (

@@ -188,7 +188,7 @@ export function ChatShell() {
         settingsMenu={
           <SettingsMenu align="start">
             <button
-              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition hover:bg-white/5 hover:text-foreground"
+              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition hover:bg-foreground/5 hover:text-foreground"
               type="button"
             >
               <Settings className="size-4" />
@@ -247,7 +247,7 @@ export function ChatShell() {
                   defaultUrl={previewHook.previewUrl}
                   onUrlChange={previewHook.onPreviewNavigate}
                 >
-                  <WebPreviewNavigation className="border-white/10 bg-background">
+                  <WebPreviewNavigation className="border-border bg-background">
                     <WebPreviewNavigationButton
                       disabled={previewHook.previewHistoryIndex <= 0}
                       onClick={previewHook.onPreviewBack}
@@ -293,14 +293,14 @@ export function ChatShell() {
                 </WebPreview>
               ) : (
                 <div className="flex h-full flex-col overflow-hidden rounded-lg border border-border/60 bg-background">
-                  <div className="flex items-center gap-1 overflow-x-auto border-b border-white/10 px-2 py-1.5">
+                  <div className="flex items-center gap-1 overflow-x-auto border-b border-border px-2 py-1.5">
                     {editorTabs.map((tab) => (
                       <button
                         className={cn(
                           "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
                           tab.id === activeEditorTabId
-                            ? "border-white/40 bg-white/10 text-white"
-                            : "border-white/10 bg-white/[0.03] text-white/80 hover:bg-white/[0.07]"
+                            ? "border-border bg-foreground/10 text-foreground"
+                            : "border-border bg-muted/30 text-foreground/80 hover:bg-foreground/[0.07]"
                         )}
                         key={tab.id}
                         onClick={() => useWorkspaceStore.getState().setActiveEditorTabId(tab.id)}
@@ -309,9 +309,9 @@ export function ChatShell() {
                         <span className="truncate max-w-56">
                           {shortFileLabel(tab.relativePath)}
                         </span>
-                        {tab.dirty ? <span className="text-white/80">&#8226;</span> : null}
+                        {tab.dirty ? <span className="text-foreground/80">&#8226;</span> : null}
                         <span
-                          className="inline-flex size-4 items-center justify-center rounded hover:bg-white/10"
+                          className="inline-flex size-4 items-center justify-center rounded hover:bg-foreground/10"
                           onClick={(event) => {
                             event.stopPropagation();
                             useWorkspaceStore.getState().onCloseEditorTab(tab.id);
@@ -325,13 +325,13 @@ export function ChatShell() {
                   </div>
                   {activeEditorTab ? (
                     <>
-                      <div className="flex items-center justify-between border-b border-white/10 px-3 py-1.5 text-xs text-white/60">
+                      <div className="flex items-center justify-between border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
                         <span className="truncate">{activeEditorTab.absolutePath}</span>
                         <div className="flex items-center gap-2">
                           <Button
                             className={cn(
                               "h-7 text-xs",
-                              editorAutoSave ? "border-white/30 text-white" : ""
+                              editorAutoSave ? "border-border/60 text-foreground" : ""
                             )}
                             onClick={() =>
                               useWorkspaceStore.getState().setEditorAutoSave((current) => !current)
@@ -379,7 +379,7 @@ export function ChatShell() {
                       </div>
                     </>
                   ) : (
-                    <div className="flex flex-1 items-center justify-center text-sm text-white/60">
+                    <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
                       Select a file to start editing.
                     </div>
                   )}
@@ -393,10 +393,10 @@ export function ChatShell() {
           <div className="border-t border-border/70 bg-background px-3 py-3 lg:px-6">
             <div className={cn("mx-auto w-full", chatContainerMax)}>
               <div className="rounded-lg border border-border/60 bg-background">
-                <div className="flex items-center justify-between border-b border-white/10 px-4 py-2">
+                <div className="flex items-center justify-between border-b border-border px-4 py-2">
                   <div className="truncate text-xs">
-                    <span className="font-semibold text-white">Terminal</span>
-                    <span className="ml-1 font-mono text-white/60">
+                    <span className="font-semibold text-foreground">Terminal</span>
+                    <span className="ml-1 font-mono text-muted-foreground">
                       {terminalHook.terminalShellLabel || ""}
                     </span>
                   </div>

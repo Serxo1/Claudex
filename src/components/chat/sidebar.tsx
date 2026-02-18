@@ -173,7 +173,7 @@ export function Sidebar({
             const Icon = item.icon;
             return (
               <button
-                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition hover:bg-white/5 hover:text-foreground"
+                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition hover:bg-foreground/5 hover:text-foreground"
                 key={item.id}
                 type="button"
               >
@@ -188,8 +188,8 @@ export function Sidebar({
               className={cn(
                 "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition",
                 activePage === item.id
-                  ? "bg-white/10 text-foreground"
-                  : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
+                  ? "bg-foreground/10 text-foreground"
+                  : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
               )}
               key={item.id}
               onClick={() => onSelectPage(item.id as "chat" | "preview")}
@@ -240,12 +240,12 @@ export function Sidebar({
           <div className="mb-2 space-y-1">
             {removableRoots.map((root) => (
               <div
-                className="flex items-center justify-between rounded border border-white/10 bg-white/[0.03] px-2 py-1"
+                className="flex items-center justify-between rounded border border-border bg-muted/30 px-2 py-1"
                 key={`root-pill-${root.rootPath}`}
               >
-                <span className="truncate text-[11px] text-white/80">{root.rootName}</span>
+                <span className="truncate text-[11px] text-foreground/80">{root.rootName}</span>
                 <button
-                  className="inline-flex size-5 items-center justify-center rounded text-white/60 hover:bg-white/10 hover:text-white"
+                  className="inline-flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
                   onClick={() => void onRemoveWorkspaceDir(root.rootPath)}
                   title="Remove folder from workspace"
                   type="button"
@@ -273,7 +273,9 @@ export function Sidebar({
         </div>
 
         <div className="mt-3 space-y-2">
-          <p className="text-[11px] text-white/60 uppercase tracking-[0.08em]">Quick snippet</p>
+          <p className="text-[11px] text-muted-foreground uppercase tracking-[0.08em]">
+            Quick snippet
+          </p>
           <Snippet code={quickSnippet}>
             <SnippetAddon>
               <SnippetText>
@@ -297,7 +299,7 @@ export function Sidebar({
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
-            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-white/90 hover:bg-white/10"
+            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground/90 hover:bg-foreground/10"
             onClick={() => {
               void onOpenTreePathInEditor(contextMenu.treePath);
               setContextMenu(null);
@@ -308,7 +310,7 @@ export function Sidebar({
             Open in editor
           </button>
           <button
-            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-white/90 hover:bg-white/10"
+            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground/90 hover:bg-foreground/10"
             onClick={() => {
               onCopyRelativePath(contextMenu.relativePath);
               setContextMenu(null);
@@ -319,7 +321,7 @@ export function Sidebar({
             Copy relative path
           </button>
           <button
-            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-white/90 hover:bg-white/10"
+            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground/90 hover:bg-foreground/10"
             onClick={() => {
               void onAddTreePathToContext(contextMenu.treePath);
               setContextMenu(null);
@@ -330,7 +332,7 @@ export function Sidebar({
             Add to context
           </button>
           <button
-            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-white/90 hover:bg-white/10"
+            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground/90 hover:bg-foreground/10"
             onClick={() => {
               void onRemoveTreePathFromContext(contextMenu.treePath);
               setContextMenu(null);

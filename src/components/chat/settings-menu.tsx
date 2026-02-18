@@ -46,14 +46,14 @@ export function SettingsMenu({ align, children }: SettingsMenuProps) {
       >
         <div className="px-2.5 pt-1.5 pb-1">
           <div className="flex items-center gap-2">
-            <UserRound className="size-4 text-white/60" />
+            <UserRound className="size-4 text-muted-foreground" />
             <span className="truncate text-sm font-semibold">{workspaceName}</span>
           </div>
-          <p className="mt-0.5 truncate text-xs text-white/60">{accountLabel}</p>
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">{accountLabel}</p>
         </div>
 
         <div className="mt-1 space-y-2 rounded-xl border border-border/70 bg-background p-2.5">
-          <DropdownMenuLabel className="px-0 pb-0.5 text-[11px] font-medium tracking-[0.08em] text-white/60 uppercase">
+          <DropdownMenuLabel className="px-0 pb-0.5 text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
             Connection
           </DropdownMenuLabel>
 
@@ -129,11 +129,11 @@ export function SettingsMenu({ align, children }: SettingsMenuProps) {
             </div>
           )}
 
-          <p className="text-[10px] text-white/60">{status}</p>
+          <p className="text-[10px] text-muted-foreground">{status}</p>
         </div>
 
         <div className="mt-2 space-y-2 rounded-xl border border-border/70 bg-background p-2.5">
-          <DropdownMenuLabel className="px-0 pb-0.5 text-[11px] font-medium tracking-[0.08em] text-white/60 uppercase">
+          <DropdownMenuLabel className="px-0 pb-0.5 text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
             Debug
           </DropdownMenuLabel>
           <Button
