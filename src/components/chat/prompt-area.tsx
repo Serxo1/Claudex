@@ -48,13 +48,9 @@ import { Suggestion, Suggestions } from "@/components/ai-elements/suggestion";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { SLASH_COMMAND_DESCRIPTIONS } from "@/lib/chat-types";
+import type { AgentSession } from "@/lib/chat-types";
 import { ComposerPromptAttachments } from "@/components/chat/composer-attachments";
-import {
-  formatPermissionMode,
-  isOpusModel,
-  slashCommandNeedsTerminal,
-  toAttachmentData
-} from "@/lib/chat-utils";
+import { isOpusModel, slashCommandNeedsTerminal, toAttachmentData } from "@/lib/chat-utils";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useGitStore } from "@/stores/git-store";
@@ -72,6 +68,9 @@ export type PromptAreaProps = {
   setTerminalOpen: (value: boolean | ((current: boolean) => boolean)) => void;
   chatContainerMax: string;
   modelOptions: Array<{ value: string; label: string; releasedAt?: string }>;
+  activeSession?: AgentSession | null;
+  // If set, submit continues this session (--resume); if null/undefined, creates new session
+  targetSessionId?: string | null;
 };
 
 function isModelNew(releasedAt?: string): boolean {
@@ -89,11 +88,12 @@ export function PromptArea({
   onInsertLatestTerminalError,
   setTerminalOpen,
   chatContainerMax,
-  modelOptions
+  modelOptions,
+  activeSession,
+  targetSessionId
 }: PromptAreaProps) {
   const settings = useSettingsStore((s) => s.settings);
   const isBusy = useSettingsStore((s) => s.isBusy);
-  const status = useSettingsStore((s) => s.status);
   const onSetModel = useSettingsStore((s) => s.onSetModel);
 
   const contextFiles = useWorkspaceStore((s) => s.contextFiles);
@@ -103,17 +103,16 @@ export function PromptArea({
 
   const isGitBusy = useGitStore((s) => s.isGitBusy);
 
-  const messages = useChatStore((s) => {
-    const thread = s.threads.find((t) => t.id === s.activeThreadId) ?? s.threads[0] ?? null;
-    return thread?.messages ?? EMPTY_ARRAY;
-  });
-  const isSending = useChatStore((s) => s.isSending);
   const slashCommands = useChatStore((s) => s.slashCommands);
-  const permissionMode = useChatStore((s) => s.permissionMode);
-  const contextUsage = useChatStore((s) => s.contextUsage);
-  const limitsWarning = useChatStore((s) => s.limitsWarning);
-  const onAbortStream = useChatStore((s) => s.onAbortStream);
   const onSubmit = useChatStore((s) => s.onSubmit);
+
+  // Context info from activeSession
+  const contextUsage = activeSession?.contextUsage ?? null;
+  const limitsWarning = activeSession?.limitsWarning ?? null;
+  const accumulatedCostUsd = activeSession?.accumulatedCostUsd ?? 0;
+
+  // Last session messages for suggestions
+  const lastMessages = activeSession?.messages ?? EMPTY_ARRAY;
 
   const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
@@ -126,10 +125,10 @@ export function PromptArea({
 
   const canSend = useMemo(() => {
     if (!settings) return false;
-    if (isSending || !input.trim()) return false;
+    if (!input.trim()) return false;
     if (settings.authMode === "api-key" && !settings.hasApiKey) return false;
     return true;
-  }, [input, isSending, settings]);
+  }, [input, settings]);
 
   const deferredInput = useDeferredValue(input);
   const slashMatch = useMemo(() => deferredInput.match(/^\/([^\s]*)$/), [deferredInput]);
@@ -154,12 +153,12 @@ export function PromptArea({
     settings?.authMode === "claude-cli" && slashQuery !== null && filteredSlashCommands.length > 0;
 
   const lastAssistantMessage = useMemo(
-    () => [...messages].reverse().find((message) => message.role === "assistant"),
-    [messages]
+    () => [...lastMessages].reverse().find((message) => message.role === "assistant"),
+    [lastMessages]
   );
   const userMessageCount = useMemo(
-    () => messages.filter((message) => message.role === "user").length,
-    [messages]
+    () => lastMessages.filter((message) => message.role === "user").length,
+    [lastMessages]
   );
 
   const hideSuggestions =
@@ -286,21 +285,9 @@ export function PromptArea({
     },
     event: FormEvent<HTMLFormElement>
   ) => {
-    void onSubmit(message, event, effort);
+    void onSubmit(message, event, effort, targetSessionId);
     setInput("");
   };
-
-  const providerLabel =
-    settings?.authMode === "claude-cli"
-      ? settings?.hasClaudeCliSession
-        ? "Claude CLI Session (persistent)"
-        : "Claude CLI Session"
-      : "Anthropic API";
-
-  const activeThread = useChatStore(
-    (s) => s.threads.find((t) => t.id === s.activeThreadId) ?? s.threads[0] ?? null
-  );
-  const accumulatedCostUsd = activeThread?.accumulatedCostUsd ?? 0;
 
   const contextMaxTokens =
     contextUsage && contextUsage.maxTokens > 0 ? contextUsage.maxTokens : 200000;
@@ -455,7 +442,7 @@ export function PromptArea({
             className="min-h-20 text-[15px] placeholder:text-muted-foreground/50"
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={onPromptInputKeyDown}
-            placeholder="Ask for follow-up changes"
+            placeholder="Nova sessão — descreve o que queres fazer"
             rows={2}
             value={input}
           />
@@ -542,9 +529,8 @@ export function PromptArea({
 
           <PromptInputSubmit
             className="rounded-full bg-foreground text-background hover:bg-foreground/90"
-            disabled={isSending ? false : !canSend || isBusy || isGitBusy}
-            onStop={() => void onAbortStream()}
-            status={isSending ? "streaming" : "ready"}
+            disabled={!canSend || isBusy || isGitBusy}
+            status="ready"
           />
         </PromptInputFooter>
       </PromptInput>
@@ -618,12 +604,6 @@ export function PromptArea({
               </ContextContentBody>
             </ContextContent>
           </Context>
-          <span className="rounded-full border border-border/70 bg-muted/30 px-2 py-1 text-foreground">
-            {formatPermissionMode(permissionMode)}
-          </span>
-          <span className="rounded-full border border-border/70 bg-muted/30 px-2 py-1">
-            {providerLabel}
-          </span>
           {limitsWarning ? (
             <span
               className={cn(
@@ -645,7 +625,6 @@ export function PromptArea({
             </span>
           ) : null}
         </div>
-        <span className="truncate">{status}</span>
       </div>
     </div>
   );

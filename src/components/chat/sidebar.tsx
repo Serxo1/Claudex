@@ -71,7 +71,7 @@ export function Sidebar({
   if (!isOpen) return null;
 
   return (
-    <aside className="absolute inset-y-0 left-0 z-40 flex h-full w-[280px] shrink-0 flex-col border-r border-border/70 bg-background lg:static lg:z-auto">
+    <aside className="absolute inset-y-0 left-0 z-40 flex h-full w-[280px] shrink-0 flex-col border-r border-border/70 bg-background/80 backdrop-blur-xl backdrop-saturate-150 lg:static lg:z-auto">
       {/* App header */}
       <div className="flex items-center justify-between px-4 pt-4 pb-3">
         <div className="flex items-center gap-2">
