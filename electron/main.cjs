@@ -695,7 +695,7 @@ app.whenReady().then(() => {
     // Expand the last user message if it's a skill/command slash invocation
     const expandedMessages = messages.map((msg, i) => {
       if (i !== messages.length - 1 || msg.role !== "user") return msg;
-      const expanded = skills.expandSlashCommand(msg.content);
+      const expanded = skills.expandLegacyCommand(msg.content);
       return expanded ? { ...msg, content: expanded } : msg;
     });
 

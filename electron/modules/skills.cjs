@@ -182,8 +182,50 @@ function getAvailableSkills() {
 }
 
 /**
+ * Returns SDK plugin configs for all installed plugins.
+ * These are passed to the Agent SDK query() so it can load skills natively.
+ */
+function getPluginConfigs() {
+  const configs = [];
+  try {
+    const raw = tryReadFile(INSTALLED_PLUGINS_FILE);
+    if (!raw) return configs;
+    const data = JSON.parse(raw);
+    for (const installations of Object.values(data.plugins || {})) {
+      const installation = Array.isArray(installations)
+        ? installations[installations.length - 1]
+        : installations;
+      if (installation?.installPath) {
+        configs.push({ type: "local", path: installation.installPath });
+      }
+    }
+  } catch { /* ignore */ }
+  return configs;
+}
+
+/**
+ * Expand only legacy commands from ~/.claude/commands/.
+ * Plugin skills are handled natively by the SDK via the plugins option.
+ * Returns null if no legacy command matches.
+ */
+function expandLegacyCommand(prompt) {
+  if (!prompt || !prompt.startsWith("/")) return null;
+
+  const parts = prompt.trim().split(/\s+/);
+  const commandName = parts[0].slice(1); // remove leading /
+  const args = parts.slice(1).join(" ");
+
+  const items = readLegacyCommands();
+  const match = items.find((item) => item.name === commandName);
+  if (!match) return null;
+
+  return match.body.replace(/\$ARGUMENTS/gi, args).trim();
+}
+
+/**
  * If `prompt` is a slash command matching a known skill or command,
  * returns the expanded prompt string.  Returns null if no match.
+ * @deprecated Prefer SDK native plugin loading. Use expandLegacyCommand for legacy commands only.
  */
 function expandSlashCommand(prompt) {
   if (!prompt || !prompt.startsWith("/")) return null;
@@ -197,7 +239,6 @@ function expandSlashCommand(prompt) {
   if (!match) return null;
 
   if (match.type === "command") {
-    // Replace $ARGUMENTS placeholder
     return match.body.replace(/\$ARGUMENTS/gi, args).trim();
   }
 
@@ -206,4 +247,4 @@ function expandSlashCommand(prompt) {
   return `${match.body}${userPart}`.trim();
 }
 
-module.exports = { getAvailableSkills, expandSlashCommand };
+module.exports = { getAvailableSkills, getPluginConfigs, expandLegacyCommand, expandSlashCommand };

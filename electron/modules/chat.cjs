@@ -4,7 +4,7 @@ const { spawn } = require("node:child_process");
 const { collectContextDirs, normalizeContextFiles } = require("./workspace.cjs");
 const { logError } = require("./logger.cjs");
 const { ANTHROPIC_API_URL, ANTHROPIC_API_VERSION, MAX_TOKENS_DEFAULT, CONTEXT_WINDOW_DEFAULT } = require("./constants.cjs");
-const { expandSlashCommand } = require("./skills.cjs");
+const { getPluginConfigs } = require("./skills.cjs");
 
 const activeStreamRequests = new Map();
 
@@ -48,16 +48,14 @@ async function startSDKStream({
   onSessionId,
   onSessionReset
 }) {
-  const rawMessage = getLatestUserPrompt(messages);
-  if (!rawMessage) {
+  const message = getLatestUserPrompt(messages);
+  if (!message) {
     sendStreamEvent(webContents, {
       requestId, type: "error",
       error: "No message to send.", provider: "claude-cli"
     });
     return;
   }
-  // Expand skill/command slash prompts before sending to the SDK
-  const message = expandSlashCommand(rawMessage) ?? rawMessage;
 
   const abortController = new AbortController();
   const entry = {
@@ -118,6 +116,7 @@ async function startSDKStream({
   const { query } = await getSdk();
 
   try {
+    const pluginConfigs = getPluginConfigs();
     const sdkOptions = {
       model: model || undefined,
       cwd,
@@ -126,7 +125,9 @@ async function startSDKStream({
       sessionId: forcedSessionId || undefined,
       abortController,
       includePartialMessages: true,
-      canUseTool
+      canUseTool,
+      plugins: pluginConfigs.length > 0 ? pluginConfigs : undefined,
+      settingSources: ["user"]
     };
 
     if (shouldApplyEffort(model, effort)) {
