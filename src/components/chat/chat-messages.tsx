@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CircleAlert, Clock3, Copy, CopyCheck, Wrench } from "lucide-react";
+import { ChevronDown, CircleAlert, Clock3, Copy, CopyCheck, Wrench } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
 import { SubagentTimeline } from "@/components/chat/subagent-timeline";
 import { TeamPanel } from "@/components/chat/team-panel";
@@ -80,7 +80,86 @@ function CopyButton({ content }: { content: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Inline tool pill — compact, always visible
+// File diff — shown inside expanded ToolPill for Edit/Write tools
+// ---------------------------------------------------------------------------
+
+const MAX_DIFF_LINES = 40;
+
+function FileDiff({ item }: { item: AgentSession["toolTimeline"][number] }) {
+  const raw = item.rawInput;
+  if (!raw) return null;
+
+  const filePath = typeof raw.file_path === "string" ? raw.file_path : null;
+  const isWrite = item.name === "Write" || item.name === "CreateFile";
+  const isEdit = item.name === "Edit" || item.name === "MultiEdit";
+
+  if (isEdit && typeof raw.old_string === "string" && typeof raw.new_string === "string") {
+    const oldLines = (raw.old_string as string).split("\n");
+    const newLines = (raw.new_string as string).split("\n");
+    const allLines = [
+      ...oldLines.map((l) => ({ sign: "-" as const, text: l })),
+      ...newLines.map((l) => ({ sign: "+" as const, text: l }))
+    ];
+    const visible = allLines.slice(0, MAX_DIFF_LINES);
+    const hidden = allLines.length - visible.length;
+    return (
+      <div className="mt-1.5 overflow-hidden rounded-md border border-border/25 bg-muted/8 font-mono text-[10px]">
+        {filePath && (
+          <div className="border-b border-border/20 px-2.5 py-1 text-muted-foreground/40">
+            {filePath}
+          </div>
+        )}
+        <div className="max-h-48 overflow-y-auto px-2.5 py-1.5">
+          {visible.map((line, i) => (
+            <div
+              key={i}
+              className={cn(
+                "whitespace-pre leading-5",
+                line.sign === "-"
+                  ? "text-destructive/60"
+                  : "text-emerald-600/70 dark:text-emerald-400/70"
+              )}
+            >
+              {line.sign} {line.text}
+            </div>
+          ))}
+          {hidden > 0 && <div className="pt-1 text-muted-foreground/30">... +{hidden} linhas</div>}
+        </div>
+      </div>
+    );
+  }
+
+  if (isWrite && typeof raw.content === "string") {
+    const lines = (raw.content as string).split("\n");
+    const visible = lines.slice(0, MAX_DIFF_LINES);
+    const hidden = lines.length - visible.length;
+    return (
+      <div className="mt-1.5 overflow-hidden rounded-md border border-border/25 bg-muted/8 font-mono text-[10px]">
+        {filePath && (
+          <div className="border-b border-border/20 px-2.5 py-1 text-muted-foreground/40">
+            {filePath}
+          </div>
+        )}
+        <div className="max-h-48 overflow-y-auto px-2.5 py-1.5">
+          {visible.map((line, i) => (
+            <div
+              key={i}
+              className="whitespace-pre leading-5 text-emerald-600/70 dark:text-emerald-400/70"
+            >
+              + {line}
+            </div>
+          ))}
+          {hidden > 0 && <div className="pt-1 text-muted-foreground/30">... +{hidden} linhas</div>}
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Inline tool pill — compact, always visible; expandable diff for file tools
 // ---------------------------------------------------------------------------
 
 function ToolPill({ item }: { item: AgentSession["toolTimeline"][number] }) {
@@ -88,47 +167,61 @@ function ToolPill({ item }: { item: AgentSession["toolTimeline"][number] }) {
   const isPending = item.status === "pending";
   const isError = item.status === "error";
   const summary = isDone ? item.resultSummary || item.inputSummary : item.inputSummary;
+  const hasDiff = isDone && !!item.rawInput;
+  const [diffOpen, setDiffOpen] = useState(false);
 
   return (
-    <div
-      className={cn(
-        "inline-flex w-fit items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] transition-all",
-        isPending
-          ? "border-blue-500/20 bg-blue-500/5"
-          : isError
-            ? "border-destructive/20 bg-destructive/5"
-            : "border-border/25 bg-muted/10 opacity-50"
-      )}
-    >
-      {isPending ? (
-        <Clock3 className="size-3 shrink-0 animate-pulse text-blue-500/60" />
-      ) : isError ? (
-        <CircleAlert className="size-3 shrink-0 text-destructive/60" />
-      ) : (
-        <div className="size-3 shrink-0" />
-      )}
-      <span
+    <div className="flex flex-col">
+      <div
         className={cn(
-          "shrink-0 font-mono",
-          isDone
-            ? "text-muted-foreground/50 line-through decoration-muted-foreground/25"
+          "inline-flex w-fit items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] transition-all",
+          isPending
+            ? "border-blue-500/20 bg-blue-500/5"
             : isError
-              ? "text-destructive/70"
-              : "text-muted-foreground/70"
+              ? "border-destructive/20 bg-destructive/5"
+              : "border-border/25 bg-muted/10 opacity-50"
         )}
       >
-        {item.name}
-      </span>
-      {summary ? (
+        {isPending ? (
+          <Clock3 className="size-3 shrink-0 animate-pulse text-blue-500/60" />
+        ) : isError ? (
+          <CircleAlert className="size-3 shrink-0 text-destructive/60" />
+        ) : (
+          <div className="size-3 shrink-0" />
+        )}
         <span
           className={cn(
-            "max-w-72 truncate",
-            isError ? "text-destructive/50" : "text-muted-foreground/40"
+            "shrink-0 font-mono",
+            isDone
+              ? "text-muted-foreground/50 line-through decoration-muted-foreground/25"
+              : isError
+                ? "text-destructive/70"
+                : "text-muted-foreground/70"
           )}
         >
-          {summary}
+          {item.name}
         </span>
-      ) : null}
+        {summary ? (
+          <span
+            className={cn(
+              "max-w-72 truncate",
+              isError ? "text-destructive/50" : "text-muted-foreground/40"
+            )}
+          >
+            {summary}
+          </span>
+        ) : null}
+        {hasDiff ? (
+          <button
+            type="button"
+            onClick={() => setDiffOpen((v) => !v)}
+            className="ml-0.5 rounded p-0.5 text-muted-foreground/30 transition hover:text-muted-foreground/60"
+          >
+            <ChevronDown className={cn("size-3 transition-transform", diffOpen && "rotate-180")} />
+          </button>
+        ) : null}
+      </div>
+      {diffOpen && hasDiff ? <FileDiff item={item} /> : null}
     </div>
   );
 }
@@ -470,8 +563,14 @@ export function ChatMessages({
 
           {/* ── Assistant actions — outside bubble, appear on hover ── */}
           {isAssistant && !isThisRunning ? (
-            <div className="flex max-w-[min(860px,100%)] items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+            <div className="flex max-w-[min(860px,100%)] items-center gap-2 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
               <CopyButton content={message.content} />
+              {isLastAssistant && toolTimeline.length > 0 ? (
+                <span className="flex items-center gap-1 text-[10px] text-muted-foreground/30">
+                  <Wrench className="size-3" />
+                  {toolTimeline.length} {toolTimeline.length === 1 ? "tool call" : "tool calls"}
+                </span>
+              ) : null}
             </div>
           ) : null}
 

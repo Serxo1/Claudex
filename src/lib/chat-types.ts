@@ -399,6 +399,8 @@ export type ToolTimelineItem = {
   status: "pending" | "completed" | "error";
   startedAt: number;
   finishedAt: number | null;
+  /** Raw input for file manipulation tools (Edit/Write) — used to render diffs */
+  rawInput?: Record<string, unknown>;
 };
 
 export type SubagentInfo = {

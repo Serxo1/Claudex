@@ -223,6 +223,11 @@ export function createStreamHandler(set: Setter, get: Getter) {
               acp.raw.name === "AskUserQuestion"
                 ? JSON.stringify(acp.raw.input)
                 : summarizeToolInput(acp.raw.input);
+            // Store raw input only for file manipulation tools (diff display)
+            const FILE_DIFF_TOOLS = new Set(["Edit", "Write", "MultiEdit"]);
+            const rawInput =
+              FILE_DIFF_TOOLS.has(acp.raw.name) && acp.raw.input ? acp.raw.input : undefined;
+
             const existingIndex = currentItems.findIndex(
               (item) => item.toolUseId === acp.raw.toolUseId
             );
@@ -234,7 +239,8 @@ export function createStreamHandler(set: Setter, get: Getter) {
                           ...item,
                           name: acp.raw.name,
                           inputSummary: nextSummary,
-                          status: "pending" as const
+                          status: "pending" as const,
+                          rawInput: rawInput ?? item.rawInput
                         }
                       : item
                   )
@@ -247,7 +253,8 @@ export function createStreamHandler(set: Setter, get: Getter) {
                       resultSummary: "",
                       status: "pending" as const,
                       startedAt: acp.raw.timestamp,
-                      finishedAt: null
+                      finishedAt: null,
+                      rawInput
                     }
                   ];
 

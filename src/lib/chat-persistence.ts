@@ -82,9 +82,12 @@ export function sanitizeSession(raw: Record<string, unknown>): AgentSession | nu
     limitsWarning: null,
     permissionMode: undefined,
     toolTimeline: Array.isArray(raw.toolTimeline)
-      ? (raw.toolTimeline as ToolTimelineItem[]).filter(
-          (item) => item && typeof item.toolUseId === "string"
-        )
+      ? (raw.toolTimeline as ToolTimelineItem[])
+          .filter((item) => item && typeof item.toolUseId === "string")
+          .map((item) => ({
+            ...item,
+            rawInput: item.rawInput && typeof item.rawInput === "object" ? item.rawInput : undefined
+          }))
       : [],
     subagents: [],
     reasoningText: typeof raw.reasoningText === "string" ? (raw.reasoningText as string) : "",
