@@ -2,13 +2,24 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { nativeImage } = require("electron");
+const os = require("node:os");
 
 const { isCommandAvailable, getWorkspaceDir } = require("./utils.cjs");
 
 // For macOS .app bundles, define the app name so we can locate the icon and optionally the CLI.
 const IDE_CANDIDATES = [
-  { id: "cursor", label: "Cursor", command: "cursor" },
-  { id: "vscode", label: "VS Code", command: "code" },
+  {
+    id: "cursor",
+    label: "Cursor",
+    command: "cursor",
+    windowsAppPath: path.join(os.homedir(), "AppData", "Local", "Programs", "cursor", "Cursor.exe")
+  },
+  {
+    id: "vscode",
+    label: "VS Code",
+    command: "code",
+    windowsAppPath: path.join(os.homedir(), "AppData", "Local", "Programs", "Microsoft VS Code", "Code.exe")
+  },
   { id: "windsurf", label: "Windsurf", command: "windsurf" },
   { id: "zed", label: "Zed", command: "zed" },
   { id: "webstorm", label: "WebStorm", command: "webstorm" },
@@ -17,7 +28,9 @@ const IDE_CANDIDATES = [
     label: "Antigravity",
     // CLI lives inside the bundle; fall back to `open -a` if not found
     macOsApp: "Antigravity",
-    bundleCliPath: "/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity"
+    bundleCliPath: "/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity",
+    // Windows support:
+    windowsAppPath: path.join(os.homedir(), "AppData", "Local", "Programs", "Antigravity", "Antigravity.exe")
   }
 ];
 
@@ -43,12 +56,33 @@ async function listAvailableIdes() {
   for (const candidate of IDE_CANDIDATES) {
     let ok = false;
 
-    if (candidate.macOsApp) {
-      // eslint-disable-next-line no-await-in-loop
-      ok = await isMacOsAppAvailable(candidate.macOsApp);
+    if (process.platform === "win32") {
+      // 1. Try specific path if defined
+      if (candidate.windowsAppPath && fs.existsSync(candidate.windowsAppPath)) {
+        ok = true;
+      }
+      // 2. Try command if not found yet
+      if (!ok && candidate.command) {
+        // eslint-disable-next-line no-await-in-loop
+        ok = await isCommandAvailable(candidate.command);
+      }
+    } else if (process.platform === "darwin") {
+      // 1. Try .app bundle
+      if (candidate.macOsApp) {
+        // eslint-disable-next-line no-await-in-loop
+        if (await isMacOsAppAvailable(candidate.macOsApp)) ok = true;
+      }
+      // 2. Try command
+      if (!ok && candidate.command) {
+        // eslint-disable-next-line no-await-in-loop
+        ok = await isCommandAvailable(candidate.command);
+      }
     } else {
-      // eslint-disable-next-line no-await-in-loop
-      ok = await isCommandAvailable(candidate.command);
+      // Linux/Other: rely on command
+      if (candidate.command) {
+        // eslint-disable-next-line no-await-in-loop
+        ok = await isCommandAvailable(candidate.command);
+      }
     }
 
     if (ok) {
@@ -67,6 +101,16 @@ function launchIde(candidate, workspaceDir) {
 
   // Resolve the original candidate definition to get macOsApp / bundleCliPath
   const def = IDE_CANDIDATES.find((c) => c.id === candidate.id) || candidate;
+
+  if (process.platform === "win32" && def.windowsAppPath && fs.existsSync(def.windowsAppPath)) {
+    const child = spawn(def.windowsAppPath, [WORKSPACE_DIR], {
+      cwd: WORKSPACE_DIR,
+      stdio: "ignore",
+      detached: true
+    });
+    child.unref();
+    return;
+  }
 
   if (def.bundleCliPath && fs.existsSync(def.bundleCliPath)) {
     // Use the CLI inside the bundle if available

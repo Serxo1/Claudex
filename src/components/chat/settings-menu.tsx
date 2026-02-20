@@ -1,6 +1,13 @@
-import { useState } from "react";
-import { Bug, CheckCircle2, Puzzle, UserRound, XCircle } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Bug, CheckCircle2, Puzzle, UserRound, XCircle, Monitor } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "@/components/ui/select";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { cn } from "@/lib/utils";
@@ -15,6 +22,19 @@ export function SettingsContent() {
   const settings = useSettingsStore((s) => s.settings);
   const workspaceName = useWorkspaceStore((s) => s.workspace?.name || "Local workspace");
   const [showSetupGuide, setShowSetupGuide] = useState(false);
+  const [ideList, setIdeList] = useState<{ id: string; label: string }[]>([]);
+
+  useEffect(() => {
+    window.desktop.ide.getInfo().then((list: any) => {
+      if (Array.isArray(list)) setIdeList(list);
+    });
+     
+  }, []);
+
+  const handleIdeChange = async (val: string) => {
+    await window.desktop.settings.setPreferredIde(val);
+    await useSettingsStore.getState().refreshSettings();
+  };
 
   return (
     <>
@@ -86,6 +106,34 @@ export function SettingsContent() {
               Nova sessão CLI
             </Button>
           ) : null}
+        </div>
+
+        {/* IDE Selector */}
+        <div className="rounded-xl border border-border/60 bg-muted/10 p-2.5 space-y-2">
+          <div className="flex items-center gap-1.5 pb-1">
+            <Monitor className="size-3 text-muted-foreground" />
+            <p className="text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
+              Editor Preferido
+            </p>
+          </div>
+          <Select
+            value={settings?.preferredIde || ""}
+            onValueChange={handleIdeChange}
+            disabled={ideList.length === 0}
+          >
+            <SelectTrigger className="h-7 w-full text-xs">
+              <SelectValue
+                placeholder={ideList.length > 0 ? "Selecione..." : "Nenhum editor detectado"}
+              />
+            </SelectTrigger>
+            <SelectContent>
+              {ideList.map((ide) => (
+                <SelectItem key={ide.id} value={ide.id} className="text-xs">
+                  {ide.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         {/* Plugins */}

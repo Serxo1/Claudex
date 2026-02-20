@@ -94,5 +94,15 @@ contextBridge.exposeInMainWorld("desktop", {
     respondToPermission: (payload) => ipcRenderer.invoke("teams:respondToPermission", payload),
     sendMessage: (payload) => ipcRenderer.invoke("teams:sendMessage", payload),
     deleteTeam: (teamName) => ipcRenderer.invoke("teams:deleteTeam", teamName)
+  },
+  todos: {
+    read: (sessionId) => ipcRenderer.invoke("todos:read", sessionId),
+    watch: (sessionId) => ipcRenderer.invoke("todos:watch", sessionId),
+    unwatch: (sessionId) => ipcRenderer.invoke("todos:unwatch", sessionId),
+    onUpdate: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("todos:update", listener);
+      return () => ipcRenderer.removeListener("todos:update", listener);
+    }
   }
 });

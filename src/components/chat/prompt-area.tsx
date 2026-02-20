@@ -1,60 +1,29 @@
-import {
-  useDeferredValue,
-  useEffect,
-  useMemo,
-  useState,
-  type FormEvent,
-  type KeyboardEvent as ReactKeyboardEvent
-} from "react";
-import { FileText, Plus, TerminalSquare, TriangleAlert } from "lucide-react";
-import type { AttachmentData } from "@/components/ai-elements/attachments";
-import {
-  Attachment,
-  AttachmentHoverCard,
-  AttachmentHoverCardContent,
-  AttachmentHoverCardTrigger,
-  AttachmentInfo,
-  AttachmentPreview,
-  AttachmentRemove,
-  Attachments
-} from "@/components/ai-elements/attachments";
-import {
-  Context,
-  ContextContent,
-  ContextContentBody,
-  ContextContentHeader,
-  ContextTrigger
-} from "@/components/ai-elements/context";
+import { useMemo, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { ListChecks } from "lucide-react";
 import {
   PromptInput,
   PromptInputBody,
-  PromptInputButton,
-  PromptInputCommand,
-  PromptInputCommandEmpty,
-  PromptInputCommandGroup,
-  PromptInputCommandItem,
-  PromptInputCommandList,
-  PromptInputFooter,
-  PromptInputSelect,
-  PromptInputSelectContent,
-  PromptInputSelectItem,
-  PromptInputSelectTrigger,
-  PromptInputSelectValue,
-  PromptInputSubmit,
-  PromptInputTextarea,
-  PromptInputTools
+  PromptInputTextarea
 } from "@/components/ai-elements/prompt-input";
 import { Suggestion, Suggestions } from "@/components/ai-elements/suggestion";
-import { Button } from "@/components/ui/button";
+import { DraggableWindow } from "@/components/teams/DraggableWindow";
+import { TaskList } from "@/components/teams/TaskList";
 import { cn } from "@/lib/utils";
-import { SLASH_COMMAND_DESCRIPTIONS } from "@/lib/chat-types";
 import type { AgentSession } from "@/lib/chat-types";
 import { ComposerPromptAttachments } from "@/components/chat/composer-attachments";
+import { MentionMenu } from "@/components/chat/mention-menu";
+import { SlashMenu } from "@/components/chat/slash-menu";
+import { ContextBanners } from "@/components/chat/context-banners";
+import { ContextUsageFooter } from "@/components/chat/context-usage-footer";
+import { PromptContextAttachments } from "@/components/chat/prompt-context-attachments";
+import { PromptFooterToolbar } from "@/components/chat/prompt-footer-toolbar";
 import { supportsMaxEffort, slashCommandNeedsTerminal, toAttachmentData } from "@/lib/chat-utils";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useGitStore } from "@/stores/git-store";
 import { useChatStore } from "@/stores/chat-store";
+import { usePromptAutocomplete } from "@/hooks/use-prompt-autocomplete";
+import { usePromptSuggestions } from "@/hooks/use-prompt-suggestions";
 
 const EMPTY_ARRAY: never[] = [];
 
@@ -107,16 +76,25 @@ export function PromptArea({
   const slashCommands = useChatStore((s) => s.slashCommands);
   const onSubmit = useChatStore((s) => s.onSubmit);
 
-  // Context info from activeSession
   const contextUsage = activeSession?.contextUsage ?? null;
   const limitsWarning = activeSession?.limitsWarning ?? null;
   const accumulatedCostUsd = activeSession?.accumulatedCostUsd ?? 0;
-
-  // Last session messages for suggestions
   const lastMessages = activeSession?.messages ?? EMPTY_ARRAY;
 
-  const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
-  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
+  const [showTodos, setShowTodos] = useState(false);
+
+  const {
+    filteredSlashCommands,
+    filteredMentionFiles,
+    isMentionMenuOpen,
+    isSlashMenuOpen,
+    mentionSelectedIndex,
+    slashSelectedIndex,
+    setMentionSelectedIndex,
+    setSlashSelectedIndex
+  } = usePromptAutocomplete(input, slashCommands, fileMentionIndex, settings);
+
+  const suggestions = usePromptSuggestions(input, lastMessages, isSlashMenuOpen, isMentionMenuOpen);
 
   const currentModel = settings?.model || "";
   const showMaxEffort = supportsMaxEffort(currentModel, dynamicModels);
@@ -125,7 +103,7 @@ export function PromptArea({
       ? dynamicModels.map((m) => ({ value: m.value, label: m.displayName }))
       : modelOptions;
 
-  const contextAttachmentItems = useMemo<AttachmentData[]>(
+  const contextAttachmentItems = useMemo(
     () => contextFiles.map((file) => toAttachmentData(file)),
     [contextFiles]
   );
@@ -136,77 +114,6 @@ export function PromptArea({
     if (settings.authMode === "api-key" && !settings.hasApiKey) return false;
     return true;
   }, [input, settings]);
-
-  const deferredInput = useDeferredValue(input);
-  const slashMatch = useMemo(() => deferredInput.match(/^\/([^\s]*)$/), [deferredInput]);
-  const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : null;
-  const filteredSlashCommands = useMemo(() => {
-    if (slashQuery === null) return [];
-    const query = slashQuery.trim();
-    return slashCommands.filter((command) => command.toLowerCase().includes(query)).slice(0, 10);
-  }, [slashCommands, slashQuery]);
-
-  const mentionMatch = useMemo(() => deferredInput.match(/(?:^|\s)@([^\s]*)$/), [deferredInput]);
-  const mentionQuery = mentionMatch ? mentionMatch[1].toLowerCase() : null;
-  const filteredMentionFiles = useMemo(() => {
-    if (mentionQuery === null) return [];
-    const query = mentionQuery.trim();
-    if (!query) return fileMentionIndex.slice(0, 12);
-    return fileMentionIndex.filter((item) => item.search.includes(query)).slice(0, 12);
-  }, [fileMentionIndex, mentionQuery]);
-
-  const isMentionMenuOpen = mentionQuery !== null && filteredMentionFiles.length > 0;
-  const isSlashMenuOpen =
-    settings?.authMode === "claude-cli" && slashQuery !== null && filteredSlashCommands.length > 0;
-
-  const lastAssistantMessage = useMemo(
-    () => [...lastMessages].reverse().find((message) => message.role === "assistant"),
-    [lastMessages]
-  );
-  const userMessageCount = useMemo(
-    () => lastMessages.filter((message) => message.role === "user").length,
-    [lastMessages]
-  );
-
-  const hideSuggestions =
-    deferredInput.trim().length >= 80 ||
-    deferredInput.trim().split(/\s+/).length > 16 ||
-    isSlashMenuOpen ||
-    isMentionMenuOpen;
-
-  const suggestions = useMemo(() => {
-    if (hideSuggestions) return [];
-    if (userMessageCount === 0) {
-      return [
-        "Map this repository and summarize the architecture.",
-        "Create a prioritized TODO list for the next milestone.",
-        "Review this project and suggest immediate quick wins."
-      ];
-    }
-    if (lastAssistantMessage?.content.trim().startsWith("Error:")) {
-      return [
-        "Retry with a smaller scope and fewer files.",
-        "Run diagnostics for this error and propose a fix plan.",
-        "Try the same task without tool calls."
-      ];
-    }
-    if (lastAssistantMessage?.content.trim()) {
-      return [
-        "Apply these changes now.",
-        "Write tests for the last changes.",
-        "Summarize the remaining risks."
-      ];
-    }
-    return [];
-  }, [hideSuggestions, lastAssistantMessage?.content, userMessageCount]);
-
-  useEffect(() => {
-    setSlashSelectedIndex(0);
-  }, [slashQuery]);
-
-  useEffect(() => {
-    setMentionSelectedIndex(0);
-  }, [mentionQuery]);
 
   function applySlashCommand(command: string) {
     const normalized = command.startsWith("/") ? command.slice(1) : command;
@@ -242,13 +149,13 @@ export function PromptArea({
     if (isMentionMenuOpen) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
-        setMentionSelectedIndex((current) => (current + 1) % filteredMentionFiles.length);
+        setMentionSelectedIndex((i) => (i + 1) % filteredMentionFiles.length);
         return;
       }
       if (event.key === "ArrowUp") {
         event.preventDefault();
         setMentionSelectedIndex(
-          (current) => (current - 1 + filteredMentionFiles.length) % filteredMentionFiles.length
+          (i) => (i - 1 + filteredMentionFiles.length) % filteredMentionFiles.length
         );
         return;
       }
@@ -261,18 +168,16 @@ export function PromptArea({
         }
       }
     }
-
     if (!isSlashMenuOpen) return;
-
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setSlashSelectedIndex((current) => (current + 1) % filteredSlashCommands.length);
+      setSlashSelectedIndex((i) => (i + 1) % filteredSlashCommands.length);
       return;
     }
     if (event.key === "ArrowUp") {
       event.preventDefault();
       setSlashSelectedIndex(
-        (current) => (current - 1 + filteredSlashCommands.length) % filteredSlashCommands.length
+        (i) => (i - 1 + filteredSlashCommands.length) % filteredSlashCommands.length
       );
       return;
     }
@@ -296,19 +201,6 @@ export function PromptArea({
     setInput("");
   };
 
-  const contextMaxTokens =
-    contextUsage && contextUsage.maxTokens > 0 ? contextUsage.maxTokens : 200000;
-  const contextUsedTokens = contextUsage?.usedTokens ?? 0;
-  const contextPercent = contextUsage?.percent ?? 0;
-  const hasContextUsage = Boolean(contextUsage);
-
-  const contextColorClass =
-    contextPercent >= 95
-      ? "text-red-500 border-red-500/40"
-      : contextPercent >= 80
-        ? "text-amber-500 border-amber-500/40"
-        : "";
-
   return (
     <div
       className={cn(
@@ -318,76 +210,21 @@ export function PromptArea({
       )}
     >
       {isMentionMenuOpen ? (
-        <div className="mb-2 rounded-xl border border-border/70 bg-background">
-          <PromptInputCommand className="bg-transparent">
-            <PromptInputCommandList>
-              <PromptInputCommandEmpty>No files found.</PromptInputCommandEmpty>
-              <PromptInputCommandGroup heading="Context files">
-                {filteredMentionFiles.map((item, index) => (
-                  <PromptInputCommandItem
-                    className={cn(
-                      "flex items-start justify-between gap-3 rounded-md px-2 py-2",
-                      index === mentionSelectedIndex ? "bg-foreground/10" : ""
-                    )}
-                    key={item.key}
-                    onMouseEnter={() => setMentionSelectedIndex(index)}
-                    onSelect={() => void applyMentionFile(item)}
-                    value={item.label}
-                  >
-                    <div className="flex min-w-0 items-start gap-2">
-                      <FileText className="mt-0.5 size-3.5 shrink-0 text-foreground/80" />
-                      <div className="flex min-w-0 flex-col">
-                        <span className="truncate text-sm">{item.label}</span>
-                        <span className="truncate text-[11px] text-muted-foreground">
-                          @ adds file to context
-                        </span>
-                      </div>
-                    </div>
-                  </PromptInputCommandItem>
-                ))}
-              </PromptInputCommandGroup>
-            </PromptInputCommandList>
-          </PromptInputCommand>
-        </div>
+        <MentionMenu
+          files={filteredMentionFiles}
+          selectedIndex={mentionSelectedIndex}
+          onSelect={(item) => void applyMentionFile(item)}
+          onHover={setMentionSelectedIndex}
+        />
       ) : null}
 
       {isSlashMenuOpen ? (
-        <div className="mb-2 rounded-xl border border-border/70 bg-background">
-          <PromptInputCommand className="bg-transparent">
-            <PromptInputCommandList>
-              <PromptInputCommandEmpty>No slash commands found.</PromptInputCommandEmpty>
-              <PromptInputCommandGroup heading="Slash commands">
-                {filteredSlashCommands.map((command, index) => (
-                  <PromptInputCommandItem
-                    className={cn(
-                      "flex items-start justify-between gap-3 rounded-md px-2 py-2",
-                      index === slashSelectedIndex ? "bg-foreground/10" : ""
-                    )}
-                    key={command}
-                    onMouseEnter={() => setSlashSelectedIndex(index)}
-                    onSelect={() => applySlashCommand(command)}
-                    value={command}
-                  >
-                    <div className="flex min-w-0 items-start gap-2">
-                      {slashCommandNeedsTerminal(command) ? (
-                        <TerminalSquare className="mt-0.5 size-3.5 shrink-0 text-foreground/80" />
-                      ) : null}
-                      <div className="flex min-w-0 flex-col">
-                        <span className="truncate text-sm">/{command}</span>
-                        <span className="truncate text-[11px] text-muted-foreground">
-                          {SLASH_COMMAND_DESCRIPTIONS[command] ||
-                            (command.includes(":")
-                              ? "Plugin slash command."
-                              : "Claude CLI command.")}
-                        </span>
-                      </div>
-                    </div>
-                  </PromptInputCommandItem>
-                ))}
-              </PromptInputCommandGroup>
-            </PromptInputCommandList>
-          </PromptInputCommand>
-        </div>
+        <SlashMenu
+          commands={filteredSlashCommands}
+          selectedIndex={slashSelectedIndex}
+          onSelect={applySlashCommand}
+          onHover={setSlashSelectedIndex}
+        />
       ) : null}
 
       {suggestions.length > 0 ? (
@@ -404,33 +241,12 @@ export function PromptArea({
         </Suggestions>
       ) : null}
 
-      {contextUsage && contextPercent >= 95 ? (
-        <div className="mb-2 flex items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400">
-          <TriangleAlert className="size-3.5 shrink-0" />
-          <span>
-            Contexto a {contextPercent}% — usa <strong>/compact</strong> para compactar a conversa.
-          </span>
-        </div>
-      ) : contextUsage && contextPercent >= 80 ? (
-        <div className="mb-2 flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-          <TriangleAlert className="size-3.5 shrink-0" />
-          <span>Contexto a {contextPercent}% — considera usar /compact em breve.</span>
-        </div>
-      ) : null}
-
-      {latestTerminalError ? (
-        <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-border/70 bg-background px-3 py-2 text-xs text-foreground">
-          <span className="truncate">Terminal error detected: {latestTerminalError}</span>
-          <Button
-            className="h-7 shrink-0 text-xs"
-            onClick={onInsertLatestTerminalError}
-            type="button"
-            variant="outline"
-          >
-            Add error to prompt
-          </Button>
-        </div>
-      ) : null}
+      <ContextBanners
+        contextPercent={contextUsage?.percent ?? 0}
+        contextUsage={contextUsage}
+        latestTerminalError={latestTerminalError}
+        onInsertTerminalError={onInsertLatestTerminalError}
+      />
 
       <PromptInput
         className={cn(
@@ -454,187 +270,53 @@ export function PromptArea({
             value={input}
           />
           <ComposerPromptAttachments />
-          {contextAttachmentItems.length > 0 ? (
-            <Attachments className="mt-2 w-full" variant="inline">
-              {contextAttachmentItems.map((item) => (
-                <AttachmentHoverCard key={item.id}>
-                  <AttachmentHoverCardTrigger asChild>
-                    <Attachment
-                      data={item}
-                      onRemove={() =>
-                        setContextFiles((current) =>
-                          current.filter((file) => file.absolutePath !== item.id)
-                        )
-                      }
-                      title={
-                        contextFiles.find((file) => file.absolutePath === item.id)?.relativePath ||
-                        item.id
-                      }
-                    >
-                      <AttachmentPreview />
-                      <AttachmentInfo />
-                      <AttachmentRemove />
-                    </Attachment>
-                  </AttachmentHoverCardTrigger>
-                  <AttachmentHoverCardContent>
-                    <Attachment data={item}>
-                      <AttachmentPreview className="size-32" />
-                    </Attachment>
-                  </AttachmentHoverCardContent>
-                </AttachmentHoverCard>
-              ))}
-            </Attachments>
-          ) : null}
+          <PromptContextAttachments
+            items={contextAttachmentItems}
+            contextFiles={contextFiles}
+            onRemove={(absolutePath) =>
+              setContextFiles((current) =>
+                current.filter((file) => file.absolutePath !== absolutePath)
+              )
+            }
+          />
         </PromptInputBody>
 
-        <PromptInputFooter className="border-t border-border/70 pt-2">
-          <PromptInputTools>
-            <PromptInputButton
-              className="text-muted-foreground hover:text-foreground"
-              onClick={() => void onAddContextFile()}
-              tooltip="Add context file"
-            >
-              <Plus className="size-4" />
-            </PromptInputButton>
-
-            <PromptInputSelect
-              onValueChange={(value) => void onSetModel(value)}
-              value={settings?.model || "sonnet"}
-            >
-              <PromptInputSelectTrigger className="h-8 min-w-56 rounded-md border border-border/60 bg-muted/30 px-2 py-1 text-xs">
-                <PromptInputSelectValue />
-              </PromptInputSelectTrigger>
-              <PromptInputSelectContent>
-                {activeModelOptions.map((model) => (
-                  <PromptInputSelectItem key={model.value} value={model.value}>
-                    <span className="flex items-center gap-2">
-                      {model.label}
-                      {"releasedAt" in model &&
-                      isModelNew((model as { releasedAt?: string }).releasedAt) ? (
-                        <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-emerald-500">
-                          NEW
-                        </span>
-                      ) : null}
-                    </span>
-                  </PromptInputSelectItem>
-                ))}
-              </PromptInputSelectContent>
-            </PromptInputSelect>
-
-            <PromptInputSelect onValueChange={setEffort} value={effort}>
-              <PromptInputSelectTrigger className="h-8 min-w-32 rounded-md border border-border/60 bg-muted/30 px-2 py-1 text-xs">
-                <PromptInputSelectValue />
-              </PromptInputSelectTrigger>
-              <PromptInputSelectContent>
-                <PromptInputSelectItem value="low">Low effort</PromptInputSelectItem>
-                <PromptInputSelectItem value="medium">Medium effort</PromptInputSelectItem>
-                <PromptInputSelectItem value="high">High effort</PromptInputSelectItem>
-                {showMaxEffort ? (
-                  <PromptInputSelectItem value="max">Max effort</PromptInputSelectItem>
-                ) : null}
-              </PromptInputSelectContent>
-            </PromptInputSelect>
-          </PromptInputTools>
-
-          <PromptInputSubmit
-            className="rounded-full bg-foreground text-background hover:bg-foreground/90"
-            disabled={!canSend || isBusy || isGitBusy}
-            status="ready"
-          />
-        </PromptInputFooter>
+        <PromptFooterToolbar
+          modelOptions={activeModelOptions}
+          currentModel={currentModel}
+          onSetModel={onSetModel}
+          effort={effort}
+          setEffort={setEffort}
+          showMaxEffort={showMaxEffort}
+          showTodos={showTodos}
+          onToggleTodos={() => setShowTodos((v) => !v)}
+          onAddContextFile={onAddContextFile}
+          canSend={canSend}
+          isBusy={isBusy}
+          isGitBusy={isGitBusy}
+          isModelNew={isModelNew}
+        />
       </PromptInput>
 
-      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-        <div className="flex items-center gap-2">
-          <Context maxTokens={contextMaxTokens} usedTokens={contextUsedTokens}>
-            <ContextTrigger
-              className={cn(
-                "h-8 rounded-full border bg-muted/30 px-2 py-1 text-xs hover:bg-foreground/[0.08]",
-                contextColorClass || "border-border/70"
-              )}
-            />
-            <ContextContent className="w-64 rounded-xl border-border/70 bg-background">
-              <ContextContentHeader />
-              <ContextContentBody className="space-y-1.5 text-xs">
-                <div className="flex items-center justify-between text-foreground/80">
-                  <span>Modelo</span>
-                  <span className="truncate pl-2 font-mono text-[11px]">
-                    {settings?.model || "--"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-foreground/70">
-                  <span>Usado</span>
-                  <span className="font-mono">
-                    {hasContextUsage && contextUsage
-                      ? contextUsage.usedTokens.toLocaleString()
-                      : "--"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-foreground/70">
-                  <span className="pl-3 text-[11px]">↳ input</span>
-                  <span className="font-mono text-[11px] text-muted-foreground">
-                    {hasContextUsage && contextUsage
-                      ? contextUsage.inputTokens.toLocaleString()
-                      : "--"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-foreground/70">
-                  <span className="pl-3 text-[11px]">↳ output</span>
-                  <span className="font-mono text-[11px] text-muted-foreground">
-                    {hasContextUsage && contextUsage
-                      ? contextUsage.outputTokens.toLocaleString()
-                      : "--"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-foreground/70">
-                  <span className="pl-3 text-[11px]">↳ cache</span>
-                  <span className="font-mono text-[11px] text-muted-foreground">
-                    {hasContextUsage && contextUsage
-                      ? contextUsage.cacheReadInputTokens.toLocaleString()
-                      : "--"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-foreground/80">
-                  <span>Máximo</span>
-                  <span className="font-mono">
-                    {hasContextUsage && contextUsage
-                      ? contextUsage.maxTokens.toLocaleString()
-                      : contextMaxTokens.toLocaleString()}
-                  </span>
-                </div>
-                {accumulatedCostUsd > 0 ? (
-                  <div className="mt-1 flex items-center justify-between border-t border-border/40 pt-1.5 text-foreground/80">
-                    <span>Custo acumulado</span>
-                    <span className="font-mono text-emerald-600 dark:text-emerald-400">
-                      ${accumulatedCostUsd.toFixed(4)}
-                    </span>
-                  </div>
-                ) : null}
-              </ContextContentBody>
-            </ContextContent>
-          </Context>
-          {limitsWarning ? (
-            <span
-              className={cn(
-                "inline-flex items-center gap-1 rounded-full border px-2 py-1",
-                "border-border/70 bg-muted/30 text-foreground"
-              )}
-              title={limitsWarning.message}
-            >
-              <TriangleAlert className="size-3.5" />
-              <span>
-                Limits
-                {limitsWarning.fiveHourPercent != null
-                  ? ` 5h ${limitsWarning.fiveHourPercent}%`
-                  : ""}
-                {limitsWarning.weeklyPercent != null
-                  ? ` • week ${limitsWarning.weeklyPercent}%`
-                  : ""}
-              </span>
-            </span>
-          ) : null}
-        </div>
-      </div>
+      <ContextUsageFooter
+        contextUsage={contextUsage}
+        limitsWarning={limitsWarning}
+        accumulatedCostUsd={accumulatedCostUsd}
+        model={currentModel}
+      />
+
+      {showTodos && (
+        <DraggableWindow
+          title="Tasks"
+          icon={<ListChecks className="size-3.5" />}
+          onClose={() => setShowTodos(false)}
+          defaultPosition={{ x: window.innerWidth * 0.5 - 170, y: window.innerHeight * 0.25 }}
+          width={340}
+          height={420}
+        >
+          <TaskList />
+        </DraggableWindow>
+      )}
     </div>
   );
 }

@@ -23,7 +23,8 @@ import type {
   TeamConfig,
   TeamTask,
   TeamInboxMessage,
-  TeamSnapshot
+  TeamSnapshot,
+  TodoItem
 } from "@/lib/chat-types";
 
 declare global {
@@ -160,6 +161,14 @@ declare global {
           content: string;
         }) => Promise<{ ok: boolean; error?: string }>;
         deleteTeam: (teamName: string) => Promise<{ ok: boolean; error?: string }>;
+      };
+      todos: {
+        read: (sessionId: string) => Promise<TodoItem[]>;
+        watch: (sessionId: string) => Promise<void>;
+        unwatch: (sessionId: string) => Promise<void>;
+        onUpdate: (
+          callback: (payload: { sessionId: string; todos: TodoItem[] }) => void
+        ) => () => void;
       };
     };
   }

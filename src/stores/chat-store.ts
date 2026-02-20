@@ -1,287 +1,27 @@
 import { create } from "zustand";
 import type {
   AgentSession,
-  ChatMessage,
-  ChatStreamEvent,
   ContextAttachment,
   PendingApproval,
   PendingQuestion,
-  TeamInboxMessage,
   TeamSnapshot,
-  Thread,
-  ToolTimelineItem
+  Thread
 } from "@/lib/chat-types";
-import { FALLBACK_SLASH_COMMANDS, THREADS_STORAGE_KEY, deriveThreadStatus } from "@/lib/chat-types";
+import { FALLBACK_SLASH_COMMANDS, THREADS_STORAGE_KEY } from "@/lib/chat-types";
 import {
   appendReasoningLine,
-  supportsMaxEffort,
+  deriveThreadTitle,
+  makeMessage,
   normalizeErrorMessage,
-  summarizeToolInput,
-  summarizeToolResult
+  patchSession,
+  supportsMaxEffort
 } from "@/lib/chat-utils";
+import { makeDefaultThread, safeLoadThreads } from "@/lib/chat-persistence";
+import { _activeStreams, createStreamHandler } from "@/lib/stream-handler";
+import { handleTeamAllDone, manualResumeForTeam, resumeForTeamApprovals } from "@/lib/team-resume";
 import type { FormEvent } from "react";
 import { useSettingsStore } from "@/stores/settings-store";
-import { useGitStore } from "@/stores/git-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
-import { usePermissionsStore } from "@/stores/permissions-store";
-import { useTeamStore } from "@/stores/team-store";
-
-// ---------------------------------------------------------------------------
-// Module-level stream tracker (not reactive — just for routing events)
-// ---------------------------------------------------------------------------
-const _activeStreams = new Map<string, { threadId: string; sessionId: string }>();
-
-/** Remove lone Unicode surrogates (U+D800–U+DFFF without a matching pair).
- *  They are valid in JS strings but produce invalid JSON, causing API 400 errors. */
-function stripLoneSurrogates(str: string): string {
-  return str.replace(/[\uD800-\uDFFF]/g, (char, index, s: string) => {
-    const code = char.charCodeAt(0);
-    if (code <= 0xdbff) {
-      // high surrogate — valid only if followed by a low surrogate
-      const next = s.charCodeAt(index + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) return char;
-    } else {
-      // low surrogate — valid only if preceded by a high surrogate
-      const prev = s.charCodeAt(index - 1);
-      if (prev >= 0xd800 && prev <= 0xdbff) return char;
-    }
-    return "\uFFFD"; // replacement character
-  });
-}
-// Tracks which requestIds correspond to auto-resume streams, mapped to their teamName
-const _autoResumeTeams = new Map<string, string>();
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function makeMessage(
-  role: "user" | "assistant",
-  content: string,
-  attachments?: ContextAttachment[]
-): ChatMessage & { attachments?: ContextAttachment[] } {
-  return { id: crypto.randomUUID(), role, content, attachments };
-}
-
-function deriveThreadTitle(messages: ChatMessage[], fallback = "New thread"): string {
-  const firstUserMessage = messages.find(
-    (message) => message.role === "user" && message.content.trim()
-  );
-  if (!firstUserMessage) return fallback;
-  const compact = firstUserMessage.content.replace(/\s+/g, " ").trim();
-  return compact.length > 44 ? `${compact.slice(0, 44)}...` : compact;
-}
-
-function makeDefaultThread(): Thread {
-  return {
-    id: crypto.randomUUID(),
-    title: "New thread",
-    updatedAt: Date.now(),
-    workspaceDirs: [],
-    sessions: [],
-    status: "idle"
-  };
-}
-
-function sanitizeSession(raw: Record<string, unknown>): AgentSession | null {
-  if (!raw || typeof raw.id !== "string" || typeof raw.threadId !== "string") return null;
-
-  const messages = (
-    Array.isArray(raw.messages)
-      ? (raw.messages as Array<ChatMessage & { attachments?: ContextAttachment[] }>)
-      : []
-  )
-    .filter(
-      (m) =>
-        m &&
-        typeof m.id === "string" &&
-        (m.role === "user" || m.role === "assistant") &&
-        typeof m.content === "string"
-    )
-    .map((m) => ({
-      ...m,
-      attachments: Array.isArray(m.attachments)
-        ? m.attachments
-            .filter(
-              (f) => f && typeof f.absolutePath === "string" && typeof f.relativePath === "string"
-            )
-            .map((f) => ({
-              absolutePath: f.absolutePath,
-              relativePath: f.relativePath,
-              mediaType: typeof f.mediaType === "string" ? f.mediaType : "",
-              previewDataUrl: typeof f.previewDataUrl === "string" ? f.previewDataUrl : "",
-              isImage: Boolean(f.isImage)
-            }))
-        : undefined
-    }));
-
-  const validStatuses = new Set(["idle", "running", "awaiting_approval", "done", "error"]);
-  const rawStatus = raw.status as string;
-  // On load: running/awaiting_approval → idle (stream is gone), error stays, done stays
-  let status: AgentSession["status"] = validStatuses.has(rawStatus)
-    ? (rawStatus as AgentSession["status"])
-    : "done";
-  if (status === "running" || status === "awaiting_approval") status = "idle";
-
-  return {
-    id: raw.id as string,
-    threadId: raw.threadId as string,
-    title: typeof raw.title === "string" ? raw.title : "Session",
-    messages,
-    status,
-    // Volatile — always cleared on load
-    requestId: undefined,
-    pendingApproval: null,
-    pendingQuestion: null,
-    isThinking: false,
-    // Persisted
-    sessionId: typeof raw.sessionId === "string" ? raw.sessionId : undefined,
-    contextUsage:
-      raw.contextUsage &&
-      typeof raw.contextUsage === "object" &&
-      typeof (raw.contextUsage as Record<string, unknown>).usedTokens === "number"
-        ? (raw.contextUsage as AgentSession["contextUsage"])
-        : null,
-    accumulatedCostUsd:
-      typeof raw.accumulatedCostUsd === "number" ? (raw.accumulatedCostUsd as number) : undefined,
-    sessionCostUsd: null,
-    limitsWarning: null,
-    permissionMode: undefined,
-    toolTimeline: Array.isArray(raw.toolTimeline)
-      ? (raw.toolTimeline as ToolTimelineItem[]).filter(
-          (item) => item && typeof item.toolUseId === "string"
-        )
-      : [],
-    subagents: [],
-    reasoningText: typeof raw.reasoningText === "string" ? (raw.reasoningText as string) : "",
-    compactCount: typeof raw.compactCount === "number" ? (raw.compactCount as number) : 0,
-    permissionDenials: Array.isArray(raw.permissionDenials)
-      ? (raw.permissionDenials as string[]).filter((d) => typeof d === "string")
-      : [],
-    teamNames: Array.isArray(raw.teamNames)
-      ? (raw.teamNames as string[]).filter((v) => typeof v === "string")
-      : undefined,
-    createdAt: typeof raw.createdAt === "number" ? (raw.createdAt as number) : Date.now(),
-    updatedAt: typeof raw.updatedAt === "number" ? (raw.updatedAt as number) : Date.now()
-  };
-}
-
-const THREAD_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
-
-function shouldArchiveThread(thread: Thread): boolean {
-  // Keep threads with no sessions (new/empty ones), active threads, and recent ones
-  if (thread.sessions.length === 0) return false;
-  if (thread.status === "running" || thread.status === "needs_attention") return false;
-  return Date.now() - thread.updatedAt > THREAD_MAX_AGE_MS;
-}
-
-function safeLoadThreads(): Thread[] {
-  try {
-    const raw = localStorage.getItem(THREADS_STORAGE_KEY);
-
-    // Try legacy key migration
-    const legacyRaw = !raw ? localStorage.getItem("claude-desktop-threads-v1") : null;
-    const source = raw || legacyRaw;
-
-    if (!source) return [makeDefaultThread()];
-    const parsed = JSON.parse(source);
-    if (!Array.isArray(parsed)) return [makeDefaultThread()];
-
-    const threads: Thread[] = parsed
-      .filter((t: Record<string, unknown>) => t && typeof t.id === "string")
-      .map((t: Record<string, unknown>) => {
-        // Migrate old format: { messages, sessionId, accumulatedCostUsd, lastContextUsage }
-        if (Array.isArray(t.messages) && !Array.isArray(t.sessions)) {
-          const rawMessages = t.messages as Array<
-            ChatMessage & { attachments?: ContextAttachment[] }
-          >;
-          const migratedSession: AgentSession = {
-            id: crypto.randomUUID(),
-            threadId: t.id as string,
-            title: typeof t.title === "string" ? (t.title as string) : "Session",
-            messages: rawMessages
-              .filter(
-                (m) =>
-                  m &&
-                  typeof m.id === "string" &&
-                  (m.role === "user" || m.role === "assistant") &&
-                  typeof m.content === "string"
-              )
-              .map((m) => ({
-                ...m,
-                attachments: Array.isArray(m.attachments)
-                  ? m.attachments
-                      .filter(
-                        (f) =>
-                          f &&
-                          typeof f.absolutePath === "string" &&
-                          typeof f.relativePath === "string"
-                      )
-                      .map((f) => ({
-                        absolutePath: f.absolutePath,
-                        relativePath: f.relativePath,
-                        mediaType: typeof f.mediaType === "string" ? f.mediaType : "",
-                        previewDataUrl:
-                          typeof f.previewDataUrl === "string" ? f.previewDataUrl : "",
-                        isImage: Boolean(f.isImage)
-                      }))
-                  : undefined
-              })),
-            status: "done",
-            sessionId: typeof t.sessionId === "string" ? (t.sessionId as string) : undefined,
-            contextUsage:
-              t.lastContextUsage &&
-              typeof (t.lastContextUsage as Record<string, unknown>).usedTokens === "number"
-                ? (t.lastContextUsage as AgentSession["contextUsage"])
-                : null,
-            accumulatedCostUsd:
-              typeof t.accumulatedCostUsd === "number"
-                ? (t.accumulatedCostUsd as number)
-                : undefined,
-            toolTimeline: [],
-            subagents: [],
-            reasoningText: "",
-            compactCount: 0,
-            permissionDenials: [],
-            createdAt: typeof t.updatedAt === "number" ? (t.updatedAt as number) : Date.now(),
-            updatedAt: typeof t.updatedAt === "number" ? (t.updatedAt as number) : Date.now()
-          };
-          return {
-            id: t.id as string,
-            title: typeof t.title === "string" ? (t.title as string) : "New thread",
-            updatedAt: typeof t.updatedAt === "number" ? (t.updatedAt as number) : Date.now(),
-            workspaceDirs: [],
-            sessions: migratedSession.messages.length > 0 ? [migratedSession] : [],
-            status: "done" as Thread["status"]
-          };
-        }
-
-        // New format
-        const sessions: AgentSession[] = Array.isArray(t.sessions)
-          ? (t.sessions as Record<string, unknown>[])
-              .map(sanitizeSession)
-              .filter((s): s is AgentSession => s !== null)
-          : [];
-
-        return {
-          id: t.id as string,
-          title: typeof t.title === "string" ? (t.title as string) : "New thread",
-          updatedAt: typeof t.updatedAt === "number" ? (t.updatedAt as number) : Date.now(),
-          workspaceDirs: Array.isArray(t.workspaceDirs)
-            ? (t.workspaceDirs as string[]).filter((d) => typeof d === "string")
-            : [],
-          sessions,
-          status: deriveThreadStatus(sessions)
-        };
-      })
-      .filter((t: Thread) => t.sessions.length > 0 || true); // Keep empty threads too
-
-    const active = threads.filter((t) => !shouldArchiveThread(t));
-    return active.length > 0 ? active : [makeDefaultThread()];
-  } catch {
-    return [makeDefaultThread()];
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Store types
@@ -332,27 +72,6 @@ type ChatState = {
 };
 
 // ---------------------------------------------------------------------------
-// Helper: update a specific session inside threads
-// ---------------------------------------------------------------------------
-
-function patchSession(
-  threads: Thread[],
-  threadId: string,
-  sessionId: string,
-  patch: Partial<AgentSession> | ((s: AgentSession) => Partial<AgentSession>)
-): Thread[] {
-  return threads.map((thread) => {
-    if (thread.id !== threadId) return thread;
-    const sessions = thread.sessions.map((session) => {
-      if (session.id !== sessionId) return session;
-      const updates = typeof patch === "function" ? patch(session) : patch;
-      return { ...session, ...updates };
-    });
-    return { ...thread, sessions, status: deriveThreadStatus(sessions) };
-  });
-}
-
-// ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
 
@@ -365,6 +84,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   slashCommands: FALLBACK_SLASH_COMMANDS,
   skillEntries: [],
   _unsubscribeStream: null,
+
+  // ---------------------------------------------------------------------------
+  // Thread / session navigation
+  // ---------------------------------------------------------------------------
 
   setThreads: (value) =>
     set((state) => {
@@ -404,523 +127,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  // ---------------------------------------------------------------------------
+  // Stream listener (delegates to stream-handler.ts)
+  // ---------------------------------------------------------------------------
+
   initStreamListener: () => {
-    const unsubscribe = window.desktop.chat.onStreamEvent((event: ChatStreamEvent) => {
-      const location = _activeStreams.get(event.requestId);
-      if (!location) return;
-
-      const { threadId, sessionId } = location;
-
-      if (event.type === "sessionInfo") {
-        useSettingsStore.getState().setDynamicSessionInfo(event.models, event.account);
-        return;
-      }
-
-      if (event.type === "authStatus" && event.error) {
-        useSettingsStore.getState().setAuthExpired(true);
-        return;
-      }
-
-      if (event.type === "slashCommands") {
-        if (event.commands.length > 0) {
-          set({ slashCommands: Array.from(new Set(event.commands)) });
-        }
-        return;
-      }
-
-      if (event.type === "status") {
-        set((state) => ({
-          threads: patchSession(state.threads, threadId, sessionId, {
-            contextUsage: event.context,
-            permissionMode: event.permissionMode,
-            updatedAt: Date.now()
-          })
-        }));
-        return;
-      }
-
-      if (event.type === "limits") {
-        set((state) => ({
-          threads: patchSession(state.threads, threadId, sessionId, {
-            limitsWarning: {
-              level: event.level,
-              message: event.message,
-              fiveHourPercent: event.fiveHourPercent,
-              weeklyPercent: event.weeklyPercent
-            }
-          })
-        }));
-        return;
-      }
-
-      if (event.type === "compactBoundary") {
-        set((state) => ({
-          threads: patchSession(state.threads, threadId, sessionId, (s) => ({
-            compactCount: s.compactCount + 1
-          }))
-        }));
-        return;
-      }
-
-      if (event.type === "permissionDenials") {
-        set((state) => ({
-          threads: patchSession(state.threads, threadId, sessionId, (s) => ({
-            permissionDenials: [...new Set([...s.permissionDenials, ...event.denials])]
-          }))
-        }));
-        return;
-      }
-
-      if (event.type === "subagentStart") {
-        set((state) => ({
-          threads: patchSession(state.threads, threadId, sessionId, (s) => {
-            // 1. Match by toolUseId (most reliable)
-            const existingByToolUse = event.toolUseId
-              ? s.subagents.find((a) => a.toolUseId === event.toolUseId)
-              : null;
-            if (existingByToolUse) {
-              return {
-                subagents: s.subagents.map((a) =>
-                  a.toolUseId === event.toolUseId ? { ...a, taskId: event.taskId } : a
-                )
-              };
-            }
-            // 2. Match by agent name extracted from description
-            //    task_started description format: "agentName: prompt..."
-            //    toolUse description format: "[agentName] rawDesc"
-            const nameFromDesc = event.description.split(":")[0].trim().toLowerCase();
-            const existingByName = nameFromDesc
-              ? s.subagents.find(
-                  (a) =>
-                    a.taskId === a.toolUseId && // created from toolUse, not yet linked
-                    a.description.toLowerCase().includes(`[${nameFromDesc}]`)
-                )
-              : null;
-            if (existingByName) {
-              return {
-                subagents: s.subagents.map((a) =>
-                  a === existingByName ? { ...a, taskId: event.taskId } : a
-                )
-              };
-            }
-            // 3. Fallback: match by exact description
-            const existingByDesc = s.subagents.find(
-              (a) => a.description === event.description && a.taskId === a.toolUseId
-            );
-            if (existingByDesc) {
-              return {
-                subagents: s.subagents.map((a) =>
-                  a === existingByDesc ? { ...a, taskId: event.taskId } : a
-                )
-              };
-            }
-            // 4. If an existing entry already covers this agent name, don't create duplicate
-            if (
-              nameFromDesc &&
-              s.subagents.some((a) => a.description.toLowerCase().includes(`[${nameFromDesc}]`))
-            ) {
-              return {
-                subagents: s.subagents.map((a) =>
-                  a.description.toLowerCase().includes(`[${nameFromDesc}]`)
-                    ? { ...a, taskId: event.taskId }
-                    : a
-                )
-              };
-            }
-            // 5. Truly new subagent not yet tracked
-            return {
-              subagents: [
-                ...s.subagents,
-                {
-                  taskId: event.taskId,
-                  description: event.description,
-                  toolUseId: event.toolUseId,
-                  status: "running" as const,
-                  startedAt: Date.now()
-                }
-              ]
-            };
-          })
-        }));
-        return;
-      }
-
-      if (event.type === "subagentDone") {
-        set((state) => ({
-          threads: patchSession(state.threads, threadId, sessionId, (s) => ({
-            subagents: s.subagents.map((a) =>
-              a.taskId === event.taskId || a.toolUseId === event.taskId
-                ? { ...a, status: event.status, summary: event.summary, finishedAt: Date.now() }
-                : a
-            )
-          }))
-        }));
-        return;
-      }
-
-      if (event.type === "approvalRequest") {
-        // Auto-approve if rule exists
-        if (usePermissionsStore.getState().matchesRule(event.toolName, event.input)) {
-          void window.desktop.chat.respondToApproval(event.approvalId, {
-            behavior: "allow",
-            updatedInput: event.input
-          });
-          return;
-        }
-        set((state) => ({
-          threads: patchSession(state.threads, threadId, sessionId, {
-            status: "awaiting_approval",
-            pendingApproval: {
-              approvalId: event.approvalId,
-              toolName: event.toolName,
-              input: event.input
-            },
-            pendingQuestion: null
-          })
-        }));
-        return;
-      }
-
-      if (event.type === "askUser") {
-        set((state) => ({
-          threads: patchSession(state.threads, threadId, sessionId, {
-            status: "awaiting_approval",
-            pendingQuestion: {
-              approvalId: event.approvalId,
-              questions: event.input.questions
-            },
-            pendingApproval: null
-          })
-        }));
-        return;
-      }
-
-      if (event.type === "toolUse") {
-        // TeamCreate: register team BEFORE the main set() to avoid state overwrite
-        if (event.name === "TeamCreate") {
-          const teamName = (event.input as Record<string, unknown> | null)?.team_name;
-          if (typeof teamName === "string" && teamName) {
-            set((state) => ({
-              threads: patchSession(state.threads, threadId, sessionId, (sess) => ({
-                teamNames: [...(sess.teamNames ?? []), teamName].filter(
-                  (v, i, a) => a.indexOf(v) === i
-                )
-              }))
-            }));
-            // Give the SDK ~600 ms to write the config file, then start watching
-            setTimeout(() => {
-              useTeamStore.getState().trackTeam(teamName);
-            }, 600);
-          }
-        }
-
-        set((state) => ({
-          threads: patchSession(state.threads, threadId, sessionId, (s) => {
-            const currentItems = s.toolTimeline;
-            const nextSummary =
-              event.name === "AskUserQuestion"
-                ? JSON.stringify(event.input)
-                : summarizeToolInput(event.input);
-            const existingIndex = currentItems.findIndex(
-              (item) => item.toolUseId === event.toolUseId
-            );
-            const nextItems: ToolTimelineItem[] =
-              existingIndex >= 0
-                ? currentItems.map((item, i) =>
-                    i === existingIndex
-                      ? {
-                          ...item,
-                          name: event.name,
-                          inputSummary: nextSummary,
-                          status: "pending" as const
-                        }
-                      : item
-                  )
-                : [
-                    ...currentItems,
-                    {
-                      toolUseId: event.toolUseId,
-                      name: event.name,
-                      inputSummary: nextSummary,
-                      resultSummary: "",
-                      status: "pending" as const,
-                      startedAt: event.timestamp,
-                      finishedAt: null
-                    }
-                  ];
-
-            // Track Task tool uses as subagents
-            let nextSubagents = s.subagents;
-            if (
-              event.name === "Task" &&
-              !s.subagents.some((a) => a.toolUseId === event.toolUseId)
-            ) {
-              const inp = event.input as Record<string, unknown> | null;
-              const agentName = typeof inp?.name === "string" && inp.name ? inp.name : null;
-              const rawDesc =
-                typeof inp?.description === "string" && (inp.description as string).trim()
-                  ? (inp.description as string).trim()
-                  : typeof inp?.prompt === "string"
-                    ? (inp.prompt as string).trim().slice(0, 80)
-                    : "Subagente";
-              const displayDesc = agentName ? `[${agentName}] ${rawDesc}` : rawDesc;
-              nextSubagents = [
-                ...s.subagents,
-                {
-                  taskId: event.toolUseId,
-                  description: displayDesc,
-                  toolUseId: event.toolUseId,
-                  status: "running" as const,
-                  startedAt: event.timestamp
-                }
-              ];
-            }
-
-            return {
-              toolTimeline: nextItems,
-              subagents: nextSubagents,
-              reasoningText: appendReasoningLine(s.reasoningText, `Calling ${event.name}...`),
-              isThinking: true,
-              status: "running" as const
-            };
-          })
-        }));
-        return;
-      }
-
-      if (event.type === "toolResult") {
-        set((state) => ({
-          threads: patchSession(state.threads, threadId, sessionId, (s) => {
-            const currentItems = s.toolTimeline;
-            const resultSummary = summarizeToolResult(event.content);
-            const nextStatus: ToolTimelineItem["status"] = event.isError ? "error" : "completed";
-            const existingIndex = currentItems.findIndex(
-              (item) => item.toolUseId === event.toolUseId
-            );
-            const nextItems: ToolTimelineItem[] =
-              existingIndex >= 0
-                ? currentItems.map((item, i) =>
-                    i === existingIndex
-                      ? { ...item, status: nextStatus, resultSummary, finishedAt: event.timestamp }
-                      : item
-                  )
-                : [
-                    ...currentItems,
-                    {
-                      toolUseId: event.toolUseId,
-                      name: "tool",
-                      inputSummary: "No input payload.",
-                      resultSummary,
-                      status: nextStatus,
-                      startedAt: event.timestamp,
-                      finishedAt: event.timestamp
-                    }
-                  ];
-            const toolName =
-              currentItems.find((item) => item.toolUseId === event.toolUseId)?.name ?? "tool";
-
-            // Update subagent status for Task tool results
-            const isSpawned =
-              typeof resultSummary === "string" && resultSummary.toLowerCase().includes("spawn");
-            const nextSubagents = s.subagents.map((a) => {
-              if (a.toolUseId !== event.toolUseId) return a;
-              // Background/team agent: "Spawned successfully" → mark as "background"
-              if (!event.isError && isSpawned) return { ...a, status: "background" as const };
-              return {
-                ...a,
-                status: event.isError ? ("failed" as const) : ("completed" as const),
-                summary: resultSummary || undefined,
-                finishedAt: event.timestamp
-              };
-            });
-
-            return {
-              toolTimeline: nextItems,
-              subagents: nextSubagents,
-              reasoningText: appendReasoningLine(
-                s.reasoningText,
-                event.isError ? `${toolName} failed.` : `${toolName} done.`
-              )
-            };
-          })
-        }));
-        return;
-      }
-
-      if (event.type === "delta") {
-        set((state) => ({
-          threads: patchSession(state.threads, threadId, sessionId, (s) => {
-            // Find the last assistant message (the streaming one)
-            const lastAssistantIdx = [...s.messages]
-              .reverse()
-              .findIndex((m) => m.role === "assistant");
-            const streamingMsgIdx =
-              lastAssistantIdx >= 0 ? s.messages.length - 1 - lastAssistantIdx : -1;
-            const safeContent = stripLoneSurrogates(event.content);
-            const patchedMessages =
-              streamingMsgIdx >= 0
-                ? s.messages.map((msg, i) =>
-                    i === streamingMsgIdx ? { ...msg, content: safeContent } : msg
-                  )
-                : s.messages;
-            return {
-              messages: patchedMessages,
-              isThinking: false,
-              updatedAt: Date.now(),
-              title: deriveThreadTitle(patchedMessages, s.title)
-            };
-          })
-        }));
-        return;
-      }
-
-      if (event.type === "done") {
-        _activeStreams.delete(event.requestId);
-        set((state) => ({
-          threads: patchSession(state.threads, threadId, sessionId, (s) => {
-            const lastAssistantIdx = [...s.messages]
-              .reverse()
-              .findIndex((m) => m.role === "assistant");
-            const streamingMsgIdx =
-              lastAssistantIdx >= 0 ? s.messages.length - 1 - lastAssistantIdx : -1;
-            const safeContent = stripLoneSurrogates(event.content);
-            const patchedMessages =
-              streamingMsgIdx >= 0
-                ? s.messages.map((msg, i) =>
-                    i === streamingMsgIdx ? { ...msg, content: safeContent } : msg
-                  )
-                : s.messages;
-            const prevCost = s.accumulatedCostUsd ?? 0;
-            const addCost = event.sessionCostUsd ?? 0;
-            return {
-              messages: patchedMessages,
-              status: "done" as const,
-              requestId: undefined,
-              pendingApproval: null,
-              pendingQuestion: null,
-              isThinking: false,
-              runningStartedAt: undefined,
-              sessionCostUsd: event.sessionCostUsd ?? null,
-              accumulatedCostUsd: prevCost + addCost,
-              sessionId: event.sessionId ?? s.sessionId,
-              updatedAt: Date.now(),
-              title: deriveThreadTitle(patchedMessages, s.title),
-              // Any subagent still "running" when session ends was synchronous and timed out
-              subagents: (s.subagents ?? []).map((a) =>
-                a.status === "running"
-                  ? { ...a, status: "completed" as const, finishedAt: Date.now() }
-                  : a
-              )
-            };
-          })
-        }));
-        useSettingsStore.getState().setStatus(`Reply via ${event.provider}.`);
-        // Send native notification if the app is not focused
-        try {
-          const threadForNotify = get().threads.find((t) =>
-            t.sessions.some((s) => s.id === sessionId)
-          );
-          const sessionForNotify = threadForNotify?.sessions.find((s) => s.id === sessionId);
-          void window.desktop.app?.notify({
-            title: sessionForNotify?.title ?? "Sessão concluída",
-            body: threadForNotify?.title ?? "O agente terminou."
-          });
-        } catch {
-          // Ignore notification errors
-        }
-        void Promise.all([
-          useSettingsStore.getState().refreshSettings(),
-          useGitStore.getState().refreshGitSummary(),
-          useGitStore.getState().refreshRecentCommits(),
-          useWorkspaceStore.getState().refreshWorkspaceFileTree()
-        ]);
-        // Cleanup team files if this was an auto-resume stream
-        const autoResumeTeam = _autoResumeTeams.get(event.requestId);
-        if (autoResumeTeam) {
-          _autoResumeTeams.delete(event.requestId);
-          void window.desktop.teams.deleteTeam(autoResumeTeam);
-        }
-        return;
-      }
-
-      if (event.type === "aborted") {
-        _activeStreams.delete(event.requestId);
-        set((state) => ({
-          threads: patchSession(state.threads, threadId, sessionId, (s) => ({
-            status: "idle" as const,
-            requestId: undefined,
-            pendingApproval: null,
-            pendingQuestion: null,
-            isThinking: false,
-            runningStartedAt: undefined,
-            subagents: (s.subagents ?? []).map((a) =>
-              a.status === "running"
-                ? { ...a, status: "stopped" as const, finishedAt: Date.now() }
-                : a
-            )
-          }))
-        }));
-        useSettingsStore.getState().setStatus("Response interrupted.");
-        return;
-      }
-
-      if (event.type === "error") {
-        _activeStreams.delete(event.requestId);
-        const friendlyError = normalizeErrorMessage(event.error);
-        const subtype = event.errorSubtype || "error";
-        const baseMessage =
-          subtype === "error_max_turns"
-            ? "Limite de turnos atingido."
-            : subtype === "error_max_budget_usd"
-              ? "Limite de custo atingido."
-              : friendlyError;
-        set((state) => ({
-          threads: patchSession(state.threads, threadId, sessionId, (s) => {
-            const lastAssistantIdx = [...s.messages]
-              .reverse()
-              .findIndex((m) => m.role === "assistant");
-            const streamingMsgIdx =
-              lastAssistantIdx >= 0 ? s.messages.length - 1 - lastAssistantIdx : -1;
-            const patchedMessages =
-              streamingMsgIdx >= 0
-                ? s.messages.map((msg, i) =>
-                    i === streamingMsgIdx ? { ...msg, content: `Error: ${baseMessage}` } : msg
-                  )
-                : s.messages;
-            return {
-              messages: patchedMessages,
-              status: "error" as const,
-              requestId: undefined,
-              pendingApproval: null,
-              pendingQuestion: null,
-              isThinking: false,
-              runningStartedAt: undefined,
-              updatedAt: Date.now(),
-              subagents: (s.subagents ?? []).map((a) =>
-                a.status === "running"
-                  ? { ...a, status: "failed" as const, finishedAt: Date.now() }
-                  : a
-              )
-            };
-          })
-        }));
-        useSettingsStore.getState().setStatus(baseMessage);
-      }
-    });
-
+    const handler = createStreamHandler(
+      set as Parameters<typeof createStreamHandler>[0],
+      get as Parameters<typeof createStreamHandler>[1]
+    );
+    const unsubscribe = window.desktop.chat.onStreamEvent(handler);
     set({ _unsubscribeStream: unsubscribe });
   },
 
   cleanupStreamListener: () => {
     const { _unsubscribeStream } = get();
     if (_unsubscribeStream) _unsubscribeStream();
-    // Abort all active streams
     for (const [requestId] of _activeStreams) {
       void window.desktop.chat.abortStream(requestId).catch(() => {});
     }
     _activeStreams.clear();
     set({ _unsubscribeStream: null });
   },
+
+  // ---------------------------------------------------------------------------
+  // Skills
+  // ---------------------------------------------------------------------------
 
   loadSkills: async () => {
     try {
@@ -931,7 +163,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         description: s.description,
         type: s.type
       }));
-      // Merge skill names into slashCommands list (for autocomplete)
       const extraNames = entries.map((e) => `/${e.name}`);
       const { slashCommands } = get();
       const merged = Array.from(new Set([...slashCommands, ...extraNames]));
@@ -941,8 +172,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  // ---------------------------------------------------------------------------
+  // Approval actions
+  // ---------------------------------------------------------------------------
+
   onApprove: async (approvalId, input) => {
-    // Find session with this approvalId
     const { threads } = get();
     let foundThreadId: string | null = null;
     let foundSessionId: string | null = null;
@@ -1032,7 +266,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   onAbortSession: async (sessionId) => {
-    // Find requestId for this session
     const { threads } = get();
     let requestId: string | undefined;
     for (const thread of threads) {
@@ -1049,6 +282,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Ignore
     }
   },
+
+  // ---------------------------------------------------------------------------
+  // Submit (send message)
+  // ---------------------------------------------------------------------------
 
   onSubmit: async (message, event, effort, targetSessionId) => {
     event.preventDefault();
@@ -1113,9 +350,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     useWorkspaceStore.getState().setContextFiles([]);
     useSettingsStore.getState().setStatus("Starting stream...");
 
-    // -----------------------------------------------------------------------
-    // Path A: continue an existing session (same Claude sessionId = --resume)
-    // -----------------------------------------------------------------------
+    // Path A: continue an existing session (--resume)
     if (targetSessionId) {
       const targetSession = activeThread.sessions.find((s) => s.id === targetSessionId);
       if (!targetSession) return;
@@ -1144,7 +379,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           resumeSessionId: targetSession.sessionId ?? "",
           workspaceDirs: activeThread.workspaceDirs
         });
-
         _activeStreams.set(started.requestId, { threadId, sessionId: targetSessionId });
         set((s) => ({
           threads: patchSession(s.threads, threadId, targetSessionId, {
@@ -1171,9 +405,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
 
-    // -----------------------------------------------------------------------
-    // Path B: create a new independent session (fresh Claude sessionId)
-    // -----------------------------------------------------------------------
+    // Path B: new independent session
     const newSessionId = crypto.randomUUID();
     const newSession: AgentSession = {
       id: newSessionId,
@@ -1202,7 +434,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               status: "running",
               updatedAt: Date.now(),
               title:
-                thread.sessions.length === 0
+                thread.sessions.length === 0 && thread.title === "New thread"
                   ? deriveThreadTitle([userMessage], thread.title)
                   : thread.title
             }
@@ -1221,7 +453,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         resumeSessionId: "",
         workspaceDirs: activeThread.workspaceDirs
       });
-
       _activeStreams.set(started.requestId, { threadId, sessionId: newSessionId });
       set({ activeSessionId: newSessionId });
       set((s) => ({
@@ -1247,307 +478,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   // ---------------------------------------------------------------------------
-  // Team completion — auto-resume main session when all tasks finish
+  // Team completion (delegates to team-resume.ts)
   // ---------------------------------------------------------------------------
 
   initTeamCompletionListener: () => {
     return window.desktop.teams.onAllDone((payload) => {
-      const snap = payload as TeamSnapshot & { teamName: string };
-      const teamName = snap.teamName;
-
-      const { threads } = get();
-
-      // Find the thread+session that owns this team
-      let foundThreadId: string | null = null;
-      let foundSession: AgentSession | null = null;
-      outer: for (const thread of threads) {
-        for (const session of [...thread.sessions].reverse()) {
-          if (session.teamNames?.includes(teamName)) {
-            foundThreadId = thread.id;
-            foundSession = session;
-            break outer;
-          }
-        }
-      }
-      if (!foundThreadId || !foundSession) return;
-      // Don't interrupt an active session
-      if (foundSession.status === "running" || foundSession.status === "awaiting_approval") return;
-
-      const threadWorkspaceDirs = threads.find((t) => t.id === foundThreadId)?.workspaceDirs ?? [];
-
-      // Collect real messages from team-lead inbox (skip SDK internals)
-      const leadInbox: TeamInboxMessage[] = snap.inboxes?.["team-lead"] ?? [];
-      const realMessages = leadInbox.filter((msg) => {
-        try {
-          const p = JSON.parse(msg.text) as Record<string, unknown>;
-          return (
-            p.type !== "idle_notification" &&
-            p.type !== "permission_request" &&
-            p.type !== "shutdown_request"
-          );
-        } catch {
-          return true;
-        }
-      });
-
-      // Build inbox summary text
-      const inboxText =
-        realMessages.length > 0
-          ? realMessages
-              .map((m) => {
-                const text = stripLoneSurrogates(m.text.slice(0, 4000));
-                return `**${m.from}:** ${text}`;
-              })
-              .join("\n\n")
-          : "(sem mensagens dos agentes)";
-
-      const prompt =
-        `Os agentes do time "${teamName}" terminaram todas as tarefas.\n\n` +
-        `Mensagens recebidas dos agentes:\n\n${inboxText}\n\n` +
-        `Apresenta ao utilizador o conteúdo COMPLETO e DETALHADO do que cada agente reportou acima. ` +
-        `Não faças meta-comentários do tipo "o agente gerou um relatório" ou "foram produzidos entregáveis" — ` +
-        `mostra o conteúdo real: findings, análises, listas, código, recomendações, exactamente como os agentes os escreveram. ` +
-        `Se um agente produziu uma lista de problemas, mostra essa lista. Se produziu recomendações, mostra essas recomendações. ` +
-        `O utilizador não tem acesso às mensagens dos agentes — tu és o único canal para o conteúdo real deles. ` +
-        `Não chames nenhuma tool de limpeza (TeamDelete, SendMessage, Bash) — foca-te apenas em apresentar os resultados.`;
-
-      const userMessage = { ...makeMessage("user", prompt), hidden: true as const };
-      const assistantMessage = makeMessage("assistant", "");
-      const sessionId = foundSession.id;
-
-      // Navigate to that thread + session
-      set({ activeThreadId: foundThreadId, activeSessionId: sessionId });
-
-      // Add messages and mark running
-      set((s) => ({
-        threads: patchSession(s.threads, foundThreadId!, sessionId, (sess) => ({
-          messages: [...sess.messages, userMessage, assistantMessage],
-          status: "running" as const,
-          isThinking: true,
-          reasoningText: "Recebendo resultados da equipa...",
-          toolTimeline: [],
-          subagents: [],
-          runningStartedAt: Date.now(),
-          updatedAt: Date.now()
-        }))
-      }));
-
-      const settings = useSettingsStore.getState().settings;
-      if (!settings) return;
-
-      void window.desktop.chat
-        .startStream({
-          messages: [{ id: userMessage.id, role: "user" as const, content: prompt }],
-          effort: undefined,
-          contextFiles: [],
-          resumeSessionId: "",
-          workspaceDirs: threadWorkspaceDirs
-        })
-        .then((started) => {
-          _activeStreams.set(started.requestId, { threadId: foundThreadId!, sessionId });
-          _autoResumeTeams.set(started.requestId, teamName);
-          set((s) => ({
-            threads: patchSession(s.threads, foundThreadId!, sessionId, {
-              requestId: started.requestId
-            })
-          }));
-          useSettingsStore.getState().setStatus(`Equipa ${teamName} concluída — a resumir...`);
-        })
-        .catch((error) => {
-          const messageText = normalizeErrorMessage((error as Error).message);
-          set((s) => ({
-            threads: patchSession(s.threads, foundThreadId!, sessionId, (sess) => ({
-              messages: sess.messages.slice(0, -2),
-              status: "error" as const,
-              isThinking: false,
-              reasoningText: ""
-            }))
-          }));
-          useSettingsStore.getState().setStatus(messageText);
-        });
+      handleTeamAllDone(
+        payload as TeamSnapshot & { teamName: string },
+        set as Parameters<typeof handleTeamAllDone>[1],
+        get as Parameters<typeof handleTeamAllDone>[2]
+      );
     });
   },
 
-  manualResumeForTeam: async (teamName) => {
-    const { threads } = get();
+  manualResumeForTeam: (teamName) =>
+    manualResumeForTeam(
+      teamName,
+      set as Parameters<typeof manualResumeForTeam>[1],
+      get as Parameters<typeof manualResumeForTeam>[2]
+    ),
 
-    let foundThreadId: string | null = null;
-    let foundSession: AgentSession | null = null;
-    outer: for (const thread of threads) {
-      for (const session of [...thread.sessions].reverse()) {
-        if (session.teamNames?.includes(teamName)) {
-          foundThreadId = thread.id;
-          foundSession = session;
-          break outer;
-        }
-      }
-    }
-    if (!foundThreadId || !foundSession) return;
-    if (foundSession.status === "running" || foundSession.status === "awaiting_approval") return;
+  resumeForTeamApprovals: (teamName, pendingAgents) =>
+    resumeForTeamApprovals(
+      teamName,
+      pendingAgents,
+      set as Parameters<typeof resumeForTeamApprovals>[2],
+      get as Parameters<typeof resumeForTeamApprovals>[3]
+    ),
 
-    const threadWorkspaceDirs = threads.find((t) => t.id === foundThreadId)?.workspaceDirs ?? [];
-
-    // Get latest snapshot from team store for inbox contents
-    const teamSnap = await window.desktop.teams.getSnapshot(teamName);
-    const leadInbox: TeamInboxMessage[] = teamSnap?.inboxes?.["team-lead"] ?? [];
-    const realMessages = leadInbox.filter((msg) => {
-      try {
-        const p = JSON.parse(msg.text) as Record<string, unknown>;
-        return (
-          p.type !== "idle_notification" &&
-          p.type !== "permission_request" &&
-          p.type !== "shutdown_request"
-        );
-      } catch {
-        return true;
-      }
-    });
-
-    const inboxText =
-      realMessages.length > 0
-        ? realMessages
-            .map((m) => {
-              const text = stripLoneSurrogates(m.text.slice(0, 4000));
-              return `**${m.from}:** ${text}`;
-            })
-            .join("\n\n")
-        : "(sem mensagens dos agentes)";
-
-    const prompt =
-      `Os agentes do time "${teamName}" terminaram todas as tarefas.\n\n` +
-      `Mensagens recebidas dos agentes:\n\n${inboxText}\n\n` +
-      `Apresenta ao utilizador o conteúdo COMPLETO e DETALHADO do que cada agente reportou acima. ` +
-      `Não faças meta-comentários do tipo "o agente gerou um relatório" ou "foram produzidos entregáveis" — ` +
-      `mostra o conteúdo real: findings, análises, listas, código, recomendações, exactamente como os agentes os escreveram. ` +
-      `Se um agente produziu uma lista de problemas, mostra essa lista. Se produziu recomendações, mostra essas recomendações. ` +
-      `O utilizador não tem acesso às mensagens dos agentes — tu és o único canal para o conteúdo real deles. ` +
-      `Não chames nenhuma tool de limpeza (TeamDelete, SendMessage, Bash) — foca-te apenas em apresentar os resultados.`;
-
-    const userMessage = { ...makeMessage("user", prompt), hidden: true as const };
-    const assistantMessage = makeMessage("assistant", "");
-    const sessionId = foundSession.id;
-
-    set({ activeThreadId: foundThreadId, activeSessionId: sessionId });
-    set((s) => ({
-      threads: patchSession(s.threads, foundThreadId!, sessionId, (sess) => ({
-        messages: [...sess.messages, userMessage, assistantMessage],
-        status: "running" as const,
-        isThinking: true,
-        reasoningText: "Recebendo resultados da equipa...",
-        toolTimeline: [],
-        subagents: [],
-        runningStartedAt: Date.now(),
-        updatedAt: Date.now()
-      }))
-    }));
-
-    const settings = useSettingsStore.getState().settings;
-    if (!settings) return;
-
-    try {
-      const started = await window.desktop.chat.startStream({
-        messages: [{ id: userMessage.id, role: "user" as const, content: prompt }],
-        effort: undefined,
-        contextFiles: [],
-        resumeSessionId: "",
-        workspaceDirs: threadWorkspaceDirs
-      });
-      _activeStreams.set(started.requestId, { threadId: foundThreadId!, sessionId });
-      _autoResumeTeams.set(started.requestId, teamName);
-      set((s) => ({
-        threads: patchSession(s.threads, foundThreadId!, sessionId, {
-          requestId: started.requestId
-        })
-      }));
-      useSettingsStore.getState().setStatus(`A resumir resultados do time ${teamName}...`);
-    } catch (error) {
-      const messageText = normalizeErrorMessage((error as Error).message);
-      set((s) => ({
-        threads: patchSession(s.threads, foundThreadId!, sessionId, (sess) => ({
-          messages: sess.messages.slice(0, -2),
-          status: "error" as const,
-          isThinking: false,
-          reasoningText: ""
-        }))
-      }));
-      useSettingsStore.getState().setStatus(messageText);
-    }
-  },
-
-  resumeForTeamApprovals: async (teamName, pendingAgents) => {
-    const { threads } = get();
-
-    // Find session that owns this team
-    let foundThreadId: string | null = null;
-    let foundSession: AgentSession | null = null;
-    outer: for (const thread of threads) {
-      for (const session of [...thread.sessions].reverse()) {
-        if (session.teamNames?.includes(teamName)) {
-          foundThreadId = thread.id;
-          foundSession = session;
-          break outer;
-        }
-      }
-    }
-    if (!foundThreadId || !foundSession) return;
-    if (foundSession.status === "running" || foundSession.status === "awaiting_approval") return;
-
-    const threadWorkspaceDirs = threads.find((t) => t.id === foundThreadId)?.workspaceDirs ?? [];
-
-    const agentsList = pendingAgents.join(", ");
-    const prompt =
-      `Os agentes do time "${teamName}" estão bloqueados à espera de aprovação de ferramentas.\n\n` +
-      `Agentes com pedidos pendentes: ${agentsList}\n\n` +
-      `Verifica a tua inbox do time, lê os pedidos de permissão e aprova os que são necessários para que os agentes possam continuar.`;
-
-    const userMessage = makeMessage("user", prompt);
-    const assistantMessage = makeMessage("assistant", "");
-    const sessionId = foundSession.id;
-
-    set({ activeThreadId: foundThreadId, activeSessionId: sessionId });
-    set((s) => ({
-      threads: patchSession(s.threads, foundThreadId!, sessionId, (sess) => ({
-        messages: [...sess.messages, userMessage, assistantMessage],
-        status: "running" as const,
-        isThinking: true,
-        reasoningText: "A processar aprovações pendentes...",
-        toolTimeline: [],
-        subagents: [],
-        runningStartedAt: Date.now(),
-        updatedAt: Date.now()
-      }))
-    }));
-
-    const settings = useSettingsStore.getState().settings;
-    if (!settings) return;
-
-    try {
-      const started = await window.desktop.chat.startStream({
-        messages: [{ id: userMessage.id, role: "user" as const, content: prompt }],
-        effort: undefined,
-        contextFiles: [],
-        resumeSessionId: "",
-        workspaceDirs: threadWorkspaceDirs
-      });
-      _activeStreams.set(started.requestId, { threadId: foundThreadId!, sessionId });
-      set((s) => ({
-        threads: patchSession(s.threads, foundThreadId!, sessionId, {
-          requestId: started.requestId
-        })
-      }));
-    } catch (error) {
-      const messageText = normalizeErrorMessage((error as Error).message);
-      set((s) => ({
-        threads: patchSession(s.threads, foundThreadId!, sessionId, (sess) => ({
-          messages: sess.messages.slice(0, -2),
-          status: "error" as const,
-          isThinking: false,
-          reasoningText: ""
-        }))
-      }));
-      useSettingsStore.getState().setStatus(messageText);
-    }
-  },
+  // ---------------------------------------------------------------------------
+  // CRUD actions
+  // ---------------------------------------------------------------------------
 
   addWorkspaceDirToThread: (threadId, dir) => {
     set((state) => ({
@@ -1587,7 +548,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       let nextActiveSessionId = state.activeSessionId;
       if (state.activeThreadId === threadId && state.activeSessionId === sessionId) {
-        // Navigate to the most-recent remaining session, or "" (new session)
         const sorted = [...remaining].sort((a, b) => b.updatedAt - a.updatedAt);
         nextActiveSessionId = sorted[0]?.id ?? "";
       }

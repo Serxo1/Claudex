@@ -104,6 +104,7 @@
   "build": {
     "appId": "com.claude.electron.chat",
     "productName": "Claude Desktop Chat",
+    "icon": "public/logo.png",
     "directories": {
       "output": "dist_electron"
     },
@@ -113,14 +114,11 @@
       "package.json"
     ],
     "asarUnpack": [
-      "node_modules/node-pty/**/*"
+      "node_modules/node-pty/**/*",
+      "node_modules/@anthropic-ai/claude-agent-sdk/**/*"
     ],
     "win": {
-      "target": "nsis"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "target": "msi"
     },
     "npmRebuild": false
   }

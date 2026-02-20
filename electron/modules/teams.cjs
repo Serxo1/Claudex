@@ -27,6 +27,10 @@ const _state = new Map();
 // Teams for which we already fired "allDone" — avoid repeat notifications
 const _notifiedComplete = new Set();
 
+// External subscribers (ACP gateway, IBM ACP gateway)
+// callback(event: "snapshot" | "allDone", teamName: string, snap: object)
+const _subscribers = new Set();
+
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -121,6 +125,9 @@ function emitFullSnapshot(teamName) {
   const snap = snapshotTeam(teamName);
   _state.set(teamName, snap);
   send("teams:snapshot", { teamName, ...snap });
+  for (const sub of _subscribers) {
+    try { sub("snapshot", teamName, snap); } catch { /* ignore */ }
+  }
 
   // Fire "allDone" once — two conditions (whichever comes first):
   // 1. All tasks (≥1) reached completed/deleted status (agent called TaskUpdate)
@@ -169,6 +176,9 @@ function emitFullSnapshot(teamName) {
     if (shouldFire) {
       _notifiedComplete.add(teamName);
       send("teams:allDone", { teamName, ...snap });
+      for (const sub of _subscribers) {
+        try { sub("allDone", teamName, snap); } catch { /* ignore */ }
+      }
     }
   }
 }
@@ -419,4 +429,14 @@ function sendMessageToAgent(teamName, agentName, content) {
   }
 }
 
-module.exports = { init, refreshTeam, listTeams, getTeamSnapshot, respondToPermission, sendMessageToAgent, deleteTeam, destroy };
+/**
+ * Subscribe to snapshot/allDone events from any team.
+ * Returns an unsubscribe function.
+ * @param {function(event: string, teamName: string, snap: object): void} callback
+ */
+function subscribe(callback) {
+  _subscribers.add(callback);
+  return () => _subscribers.delete(callback);
+}
+
+module.exports = { init, refreshTeam, listTeams, getTeamSnapshot, respondToPermission, sendMessageToAgent, deleteTeam, destroy, subscribe };

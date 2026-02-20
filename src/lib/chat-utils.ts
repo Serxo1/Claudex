@@ -1,6 +1,65 @@
 import type { AttachmentData } from "@/components/ai-elements/attachments";
-import type { ContextAttachment, DynamicModel, PermissionMode } from "@/lib/chat-types";
-import { TERMINAL_REQUIRED_SLASH_COMMANDS } from "@/lib/chat-types";
+import type {
+  AgentSession,
+  ChatMessage,
+  ContextAttachment,
+  DynamicModel,
+  PermissionMode,
+  Thread
+} from "@/lib/chat-types";
+import { TERMINAL_REQUIRED_SLASH_COMMANDS, deriveThreadStatus } from "@/lib/chat-types";
+
+// ---------------------------------------------------------------------------
+// String / message helpers (also used by stream-handler and team-resume)
+// ---------------------------------------------------------------------------
+
+/** Remove lone Unicode surrogates — valid in JS strings but invalid in JSON. */
+export function stripLoneSurrogates(str: string): string {
+  return str.replace(/[\uD800-\uDFFF]/g, (char, index, s: string) => {
+    const code = char.charCodeAt(0);
+    if (code <= 0xdbff) {
+      const next = s.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) return char;
+    } else {
+      const prev = s.charCodeAt(index - 1);
+      if (prev >= 0xd800 && prev <= 0xdbff) return char;
+    }
+    return "\uFFFD";
+  });
+}
+
+export function makeMessage(
+  role: "user" | "assistant",
+  content: string,
+  attachments?: ContextAttachment[]
+): ChatMessage & { attachments?: ContextAttachment[] } {
+  return { id: crypto.randomUUID(), role, content, attachments };
+}
+
+export function deriveThreadTitle(messages: ChatMessage[], fallback = "New thread"): string {
+  const first = messages.find((m) => m.role === "user" && m.content.trim());
+  if (!first) return fallback;
+  const compact = first.content.replace(/\s+/g, " ").trim();
+  return compact.length > 44 ? `${compact.slice(0, 44)}...` : compact;
+}
+
+/** Immutably patch a specific session inside the threads array. */
+export function patchSession(
+  threads: Thread[],
+  threadId: string,
+  sessionId: string,
+  patch: Partial<AgentSession> | ((s: AgentSession) => Partial<AgentSession>)
+): Thread[] {
+  return threads.map((thread) => {
+    if (thread.id !== threadId) return thread;
+    const sessions = thread.sessions.map((session) => {
+      if (session.id !== sessionId) return session;
+      const updates = typeof patch === "function" ? patch(session) : patch;
+      return { ...session, ...updates };
+    });
+    return { ...thread, sessions, status: deriveThreadStatus(sessions) };
+  });
+}
 
 export function formatPermissionMode(mode: PermissionMode): string {
   switch (mode) {
