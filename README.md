@@ -1,60 +1,106 @@
-# Claude Desktop-Style App (Electron + React)
+# Claudex
 
-Starter local app with:
+**Claudex** is a desktop application that wraps the [Claude Code CLI](https://docs.anthropic.com/claude/claude-code) in a rich visual interface. Think of it as a native IDE-like shell for Claude — with streaming chat, a built-in Monaco editor, integrated terminal, web preview, Git source control, and multi-agent team support.
 
-- Electron desktop shell
-- React + Vite frontend
-- Tailwind CSS v4 with `shadcn/ui`-compatible setup
-- Chat UI structured with AI Elements-like components
-- Two auth modes:
-  - Anthropic API Key
-  - Claude Code CLI delegation (uses existing CLI login session)
+> Authentication is handled exclusively via `claude login`. No API keys required.
 
-## Why this architecture
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)
+![License](https://img.shields.io/github/license/Serxo1/Claudex)
+![Release](https://img.shields.io/github/v/release/Serxo1/Claudex)
 
-`Electron` is practical for this use case because process/PTY integration with CLI tools is straightforward.  
-For CLI auth mode, the app **delegates requests to `claude` CLI** and does not attempt to extract internal account tokens.
+---
 
-## Run
+## Features
 
-1. Install dependencies:
+- **Streaming chat** — real-time responses with tool use, reasoning blocks, and inline file diffs
+- **Monaco editor** — open and edit files side-by-side with the chat, with auto-save
+- **Integrated terminal** — full PTY shell (zsh/bash) docked at the bottom
+- **Web preview** — embedded browser with real DevTools console and auto-navigate on localhost URLs
+- **Source control panel** — staged/unstaged/untracked file groups, inline commit, push, pull, fetch, and PR creation via GitHub CLI
+- **Team agents** — monitor and interact with multi-agent Claude Code teams in real time
+- **Auto-updater** — background update checks with one-click install via GitHub Releases
+
+---
+
+## Requirements
+
+- **Node.js 18+**
+- **Claude Code CLI** installed and authenticated:
 
 ```bash
+npm install -g @anthropic-ai/claude-code
+claude login
+```
+
+---
+
+## Download
+
+Get the latest installer from the [Releases page](https://github.com/Serxo1/Claudex/releases):
+
+| Platform | File |
+|----------|------|
+| Windows | `Claudex-Setup-x.y.z.exe` |
+| macOS (Apple Silicon) | `Claudex-x.y.z-arm64.dmg` |
+| macOS (Intel) | `Claudex-x.y.z.dmg` |
+
+---
+
+## Development
+
+```bash
+# Install dependencies
 npm install
-```
 
-2. Start app:
-
-```bash
+# Start dev server (Vite :5173 + Electron)
 npm run dev
+
+# Type check
+npm run typecheck
+
+# Lint
+npm run lint
+
+# Format
+npm run format
 ```
 
-## Auth modes
+---
 
-### API Key mode
-
-- Save your Anthropic API key in app settings.
-- Requests are sent directly to `https://api.anthropic.com/v1/messages`.
-
-### Claude CLI mode
-
-- Ensure `claude` is installed and logged in.
-- App runs `claude -p ... --output-format json` and displays result.
-- This uses the official CLI session rather than manually handling account secrets.
-
-## Add official shadcn and AI Elements later
-
-This scaffold includes compatible structure and local components so you can work offline.
-
-When network is available:
+## Build
 
 ```bash
-npx shadcn@latest add button input
-npx ai-elements@latest add conversation message prompt-input
+# Windows (NSIS installer + MSI)
+npm run dist:win
+
+# macOS (DMG — arm64 + x64)
+npm run dist:mac
 ```
 
-## Notes
+Releases are built automatically via GitHub Actions when a version tag is pushed:
 
-- This is an MVP scaffold (single-shot responses, no token streaming yet).
-- Next step is implementing streaming via `stream-json` from Claude CLI and incremental UI updates.
+```bash
+git tag v1.0.0
+git push origin main --tags
+```
 
+---
+
+## Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Shell | Electron 37 |
+| UI | React 19 + Vite 7 + Tailwind CSS 4 |
+| State | Zustand 5 |
+| Editor | Monaco Editor |
+| Terminal | node-pty + XTerm.js |
+| Markdown | Streamdown + Shiki |
+| AI SDK | `@anthropic-ai/claude-agent-sdk` |
+| Updates | electron-updater |
+
+---
+
+## License
+
+MIT
