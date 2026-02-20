@@ -52,6 +52,37 @@ O GitHub Actions (`.github/workflows/release.yml`) faz build Windows + macOS e p
 
 > **Nunca fazer force-push em `main`** — os instaladores publicados referenciam os commits por hash.
 
+## Peculiaridades da Build (electron-builder)
+
+### Ícones
+
+- O campo `icon` aceita **PNG** — o electron-builder converte automaticamente para `.icns` (macOS) e `.ico` (Windows).
+- **Nunca** referenciar `.png` em `nsis.installerIcon` / `nsis.uninstallerIcon` — o NSIS exige `.ico` e falha com "invalid icon file". Omitir essas propriedades; o electron-builder usa o ícone principal convertido.
+- Se quiseres um ícone `.ico` personalizado para o instalador, gera-o manualmente com ImageMagick e coloca em `build/icon.ico`.
+
+### Code signing Windows
+
+- As propriedades `certificateFile` e `signingHashAlgorithms` **não existem** no schema do electron-builder 26.x.
+- Os campos correctos são `cscLink` (path ou base64 do `.pfx`) e `cscKeyPassword`. Colocá-los em `win` no `package.json` ou via env vars `CSC_LINK` / `CSC_KEY_PASSWORD`.
+- Sem certificado: não adicionar essas propriedades — a build funciona sem assinatura, apenas com aviso de segurança no Windows.
+
+### SDK e dependências nativas
+
+- `@anthropic-ai/claude-agent-sdk` está **pinned** sem `^` (`"0.2.45"`) — não fazer upgrade automático; testar manualmente antes de alterar.
+- `node-pty` e `@anthropic-ai/claude-agent-sdk` estão em `asarUnpack` — **obrigatório** para funcionarem fora do ASAR no Windows.
+- `electron-updater` tem de estar em `dependencies` (não `devDependencies`) para o electron-builder o incluir no pacote.
+
+### GitHub Actions
+
+- O workflow só dispara em tags `v*` — um push normal para `main` **não** gera release.
+- Se um tag for criado antes das Actions estarem activas (ou antes do repo ser público), o evento é perdido. Solução: apagar e recriar o tag.
+  ```bash
+  git tag -d v0.x.y && git push origin :refs/tags/v0.x.y
+  git tag v0.x.y && git push origin v0.x.y
+  ```
+- O secret `GH_TOKEN` no repo é **obrigatório** para publicar o release. Sem ele a build compila mas falha na publicação.
+- O repo tem de ser **público** ou ter GitHub Actions activadas em Settings para o workflow correr.
+
 ## Arquitetura
 
 ### Processo Principal (Electron)
