@@ -103,13 +103,9 @@ body,
 
 body {
   font-family: "Inter", "SF Pro Text", "Avenir Next", "Segoe UI", sans-serif;
-  background: var(--background);
+  background: transparent;
   color: var(--foreground);
   overflow: hidden;
-}
-
-.dark body {
-  background: transparent;
 }
 
 /* Subagent shimmer animation */

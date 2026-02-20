@@ -10,7 +10,6 @@ import {
   Plus,
   Search,
   Settings,
-  ShoppingBag,
   Trash2,
   X
 } from "lucide-react";
@@ -146,7 +145,7 @@ export function Sidebar({
   if (!isOpen) return null;
 
   return (
-    <aside className="absolute inset-y-0 left-0 z-40 flex h-full w-[280px] shrink-0 flex-col border-r border-border/70 bg-white dark:bg-background/50 lg:static lg:z-auto">
+    <aside className="absolute inset-y-0 left-0 z-40 flex h-full w-[280px] shrink-0 flex-col border-r border-border/70 bg-white/60 dark:bg-background/60 lg:static lg:z-auto">
       {/* App header — pt-8 to clear macOS traffic lights (hiddenInset titleBar) */}
       <div className="[-webkit-app-region:drag] flex items-center justify-between px-4 pt-8 pb-3">
         <div className="flex items-center gap-2 [-webkit-app-region:no-drag]">
@@ -177,7 +176,7 @@ export function Sidebar({
 
       {/* Nav pages */}
       <div className="space-y-0.5 px-2">
-        <button
+        {/* <button
           className={cn(
             "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition",
             activePage === "store"
@@ -189,7 +188,7 @@ export function Sidebar({
         >
           <ShoppingBag className="size-4 shrink-0" />
           <span>Store</span>
-        </button>
+        </button> */}
         <button
           className={cn(
             "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition",
@@ -469,14 +468,16 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* Settings collapsible panel */}
+      {/* Settings collapsible panel.
+          Outer div: animation (overflow-hidden + max-height transition).
+          Inner div: scroll when content exceeds available height. */}
       <div
         className={cn(
           "overflow-hidden transition-[max-height] duration-200 ease-in-out border-t border-border/60 bg-white dark:bg-background",
-          isSettingsOpen ? "max-h-[600px]" : "max-h-0 border-t-0"
+          isSettingsOpen ? "max-h-[60vh]" : "max-h-0 border-t-0"
         )}
       >
-        {settingsContent}
+        <div className="overflow-y-auto max-h-[60vh]">{settingsContent}</div>
       </div>
 
       {/* Footer */}
