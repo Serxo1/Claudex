@@ -66,6 +66,19 @@ O GitHub Actions (`.github/workflows/release.yml`) faz build Windows + macOS e p
 - Os campos correctos são `cscLink` (path ou base64 do `.pfx`) e `cscKeyPassword`. Colocá-los em `win` no `package.json` ou via env vars `CSC_LINK` / `CSC_KEY_PASSWORD`.
 - Sem certificado: não adicionar essas propriedades — a build funciona sem assinatura, apenas com aviso de segurança no Windows.
 
+### Code signing + Notarização macOS
+
+- Requer certificado **"Developer ID Application"** da Apple Developer account exportado como `.p12`.
+- Notarização é feita automaticamente via `mac.notarize.teamId` no `package.json` (electron-builder 24+).
+- Secrets necessários no GitHub Actions (e localmente para `dist:mac`):
+  - `CSC_LINK` — base64 do `.p12`: `base64 -i cert.p12 | tr -d '\n'`
+  - `CSC_KEY_PASSWORD` — password do `.p12`
+  - `APPLE_ID` — email da Apple Developer account
+  - `APPLE_APP_SPECIFIC_PASSWORD` — gerado em appleid.apple.com → App-Specific Passwords
+  - `APPLE_TEAM_ID` — Team ID em developer.apple.com/account → Membership
+- `hardenedRuntime: true` e o `build/entitlements.mac.plist` são **obrigatórios** para a notarização aceitar o binário.
+- Sem esses secrets: a build compila mas o Gatekeeper bloqueia a abertura no macOS.
+
 ### SDK e dependências nativas
 
 - `@anthropic-ai/claude-agent-sdk` está **pinned** sem `^` (`"0.2.45"`) — não fazer upgrade automático; testar manualmente antes de alterar.
