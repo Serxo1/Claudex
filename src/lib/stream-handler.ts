@@ -1,7 +1,6 @@
 import type { AgentSession, ChatStreamEvent, Thread, ToolTimelineItem } from "@/lib/chat-types";
 import { normalizeToAcp } from "@/lib/acp-events";
 import {
-  appendReasoningLine,
   deriveThreadTitle,
   normalizeErrorMessage,
   patchSession,
@@ -275,7 +274,6 @@ export function createStreamHandler(set: Setter, get: Getter) {
             return {
               toolTimeline: nextItems,
               subagents: nextSubagents,
-              reasoningText: appendReasoningLine(sess.reasoningText, `Calling ${acp.raw.name}...`),
               isThinking: true,
               status: "running" as const
             };
@@ -335,11 +333,7 @@ export function createStreamHandler(set: Setter, get: Getter) {
 
             return {
               toolTimeline: nextItems,
-              subagents: nextSubagents,
-              reasoningText: appendReasoningLine(
-                sess.reasoningText,
-                acp.raw.isError ? `${toolName} failed.` : `${toolName} done.`
-              )
+              subagents: nextSubagents
             };
           })
         }));

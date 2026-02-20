@@ -1,13 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  CheckCircle2,
-  CircleAlert,
-  Clock3,
-  ChevronDownIcon,
-  Copy,
-  CopyCheck,
-  Wrench
-} from "lucide-react";
+import { CircleAlert, Clock3, ChevronDownIcon, Copy, CopyCheck, Wrench } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
 import { SubagentTimeline } from "@/components/chat/subagent-timeline";
 import { TeamPanel } from "@/components/chat/team-panel";
@@ -93,26 +85,41 @@ function CopyButton({ content }: { content: string }) {
 // ---------------------------------------------------------------------------
 
 function ToolTimelineRow({ item }: { item: AgentSession["toolTimeline"][number] }) {
+  const isDone = item.status === "completed";
+  const isPending = item.status === "pending";
+  const isError = item.status === "error";
+
   return (
-    <div className="flex items-start gap-1.5 py-0.5 text-xs">
-      {item.status === "pending" ? (
-        <Clock3 className="mt-0.5 size-3 shrink-0 animate-pulse text-muted-foreground/50" />
-      ) : item.status === "error" ? (
-        <CircleAlert className="mt-0.5 size-3 shrink-0 text-destructive/60" />
+    <div className={cn("flex items-center gap-1.5 py-0.5 text-xs", isDone && "opacity-35")}>
+      {isPending ? (
+        <Clock3 className="size-3 shrink-0 animate-pulse text-blue-500/60" />
+      ) : isError ? (
+        <CircleAlert className="size-3 shrink-0 text-destructive/60" />
       ) : (
-        <CheckCircle2 className="mt-0.5 size-3 shrink-0 text-muted-foreground/30" />
+        <div className="size-3 shrink-0" />
       )}
       <span
         className={cn(
           "shrink-0 font-mono",
-          item.status === "error" ? "text-destructive/70" : "text-muted-foreground/50"
+          isDone
+            ? "text-muted-foreground/50 line-through decoration-muted-foreground/30"
+            : isError
+              ? "text-destructive/70"
+              : "text-muted-foreground/70"
         )}
       >
         {item.name}
       </span>
-      <span className="min-w-0 truncate text-muted-foreground/35">
-        {item.status === "pending" ? item.inputSummary : item.resultSummary || item.inputSummary}
-      </span>
+      {!isDone && (
+        <span
+          className={cn(
+            "min-w-0 truncate",
+            isError ? "text-destructive/50" : "text-muted-foreground/40"
+          )}
+        >
+          {isPending ? item.inputSummary : item.resultSummary || item.inputSummary}
+        </span>
+      )}
     </div>
   );
 }
