@@ -107,12 +107,14 @@
     "appId": "io.claudex.app",
     "productName": "Claudex",
     "icon": "public/logo.png",
+    "afterSign": "scripts/afterSign.cjs",
     "directories": {
       "output": "dist_electron"
     },
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "scripts/**/*",
       "package.json"
     ],
     "asarUnpack": [
