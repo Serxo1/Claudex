@@ -80,6 +80,8 @@ export const Reasoning = memo(
     const hasEverStreamedRef = useRef(isStreaming);
     const [hasAutoClosed, setHasAutoClosed] = useState(false);
     const startTimeRef = useRef<number | null>(null);
+    // Tracks whether the user explicitly toggled the panel — prevents auto-close overriding intent
+    const userToggledRef = useRef(false);
 
     // Track when streaming starts and compute duration
     useEffect(() => {
@@ -101,9 +103,15 @@ export const Reasoning = memo(
       }
     }, [isStreaming, isOpen, setIsOpen, isExplicitlyClosed]);
 
-    // Auto-close when streaming ends (once only, and only if it ever streamed)
+    // Auto-close when streaming ends — skip if user manually toggled the panel
     useEffect(() => {
-      if (hasEverStreamedRef.current && !isStreaming && isOpen && !hasAutoClosed) {
+      if (
+        hasEverStreamedRef.current &&
+        !isStreaming &&
+        isOpen &&
+        !hasAutoClosed &&
+        !userToggledRef.current
+      ) {
         const timer = setTimeout(() => {
           setIsOpen(false);
           setHasAutoClosed(true);
@@ -115,6 +123,7 @@ export const Reasoning = memo(
 
     const handleOpenChange = useCallback(
       (newOpen: boolean) => {
+        userToggledRef.current = true;
         setIsOpen(newOpen);
       },
       [setIsOpen]

@@ -82,9 +82,12 @@ export function sanitizeSession(raw: Record<string, unknown>): AgentSession | nu
     limitsWarning: null,
     permissionMode: undefined,
     toolTimeline: Array.isArray(raw.toolTimeline)
-      ? (raw.toolTimeline as ToolTimelineItem[]).filter(
-          (item) => item && typeof item.toolUseId === "string"
-        )
+      ? (raw.toolTimeline as ToolTimelineItem[])
+          .filter((item) => item && typeof item.toolUseId === "string")
+          .map((item) => ({
+            ...item,
+            rawInput: item.rawInput && typeof item.rawInput === "object" ? item.rawInput : undefined
+          }))
       : [],
     subagents: [],
     reasoningText: typeof raw.reasoningText === "string" ? (raw.reasoningText as string) : "",
@@ -95,6 +98,26 @@ export function sanitizeSession(raw: Record<string, unknown>): AgentSession | nu
     teamNames: Array.isArray(raw.teamNames)
       ? (raw.teamNames as string[]).filter((v) => typeof v === "string")
       : undefined,
+    sessionStartHash:
+      typeof raw.sessionStartHash === "string" ? (raw.sessionStartHash as string) : undefined,
+    sessionChangedFiles: Array.isArray(raw.sessionChangedFiles)
+      ? (raw.sessionChangedFiles as string[]).filter((v) => typeof v === "string")
+      : undefined,
+    contentBlocks: Array.isArray(raw.contentBlocks)
+      ? (raw.contentBlocks as Array<{ type: string; text?: string; toolUseId?: string }>)
+          .filter(
+            (b) =>
+              b &&
+              ((b.type === "text" && typeof b.text === "string") ||
+                (b.type === "tool" && typeof b.toolUseId === "string"))
+          )
+          .map((b) =>
+            b.type === "text"
+              ? ({ type: "text", text: b.text! } as const)
+              : ({ type: "tool", toolUseId: b.toolUseId! } as const)
+          )
+      : undefined,
+    queuedMessage: null,
     createdAt: typeof raw.createdAt === "number" ? (raw.createdAt as number) : Date.now(),
     updatedAt: typeof raw.updatedAt === "number" ? (raw.updatedAt as number) : Date.now()
   };

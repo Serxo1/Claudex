@@ -64,6 +64,7 @@ const terminal = require("./modules/terminal.cjs");
 const chat = require("./modules/chat.cjs");
 const skills = require("./modules/skills.cjs");
 const teams = require("./modules/teams.cjs");
+const updater = require("./modules/updater.cjs");
 const { logError } = require("./modules/logger.cjs");
 const { MAX_EDITOR_FILE_SIZE, PR_TIMEOUT_MS, TEMP_PASTE_DIR } = require("./modules/constants.cjs");
 
@@ -87,7 +88,7 @@ async function createWindow() {
     height: 920,
     minWidth: 1024,
     minHeight: 720,
-    title: "Claude Desktop MVP",
+    title: "Claudex",
     icon: path.join(__dirname, "../public/logo.png"),
     ...(isDarwin
       ? {
@@ -150,6 +151,10 @@ app.whenReady().then(() => {
       mainWindow.on("closed", () => {
         teams.destroy();
       });
+      // Start auto-updater after window is ready (only in production)
+      if (!process.env.VITE_DEV_SERVER_URL) {
+        updater.init(mainWindow, ipcMain);
+      }
     }
   });
 

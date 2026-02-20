@@ -15,8 +15,14 @@ export interface ChatMessage {
   id: string;
   role: MessageRole;
   content: string;
+  /** Interleaved content blocks frozen when the turn completes — stored per-message */
+  contentBlocks?: ContentBlock[];
+  /** Tool timeline items referenced by contentBlocks — frozen per-message so they survive toolTimeline reset */
+  contentBlockTools?: ToolTimelineItem[];
   /** Mensagem interna (ex: auto-resume de team agents) — não renderizada no chat */
   hidden?: true;
+  /** Marcador inline de compactação — renderizado como separador visual */
+  compact?: true;
 }
 
 export interface AppSettings {
@@ -279,6 +285,12 @@ export interface GitSummary {
   deletions: number;
 }
 
+export interface GitChangedFile {
+  path: string;
+  status: "added" | "modified" | "deleted" | "renamed" | "untracked";
+  staged: boolean;
+}
+
 export interface GitCommitFile {
   path: string;
   status: "added" | "modified" | "deleted" | "renamed";
@@ -324,6 +336,9 @@ export type ThreadContextUsage = {
   cacheCreationInputTokens: number;
 };
 
+/** Ordered interleaved content block — text or tool call */
+export type ContentBlock = { type: "text"; text: string } | { type: "tool"; toolUseId: string };
+
 export type PendingApproval = {
   approvalId: string;
   toolName: string;
@@ -352,6 +367,11 @@ export type AgentSession = {
   pendingQuestion?: PendingQuestion | null;
   isThinking?: boolean;
   runningStartedAt?: number;
+  queuedMessage?: {
+    text: string;
+    contextFiles: ContextAttachment[];
+    effort: string;
+  } | null;
   // Persisted
   sessionId?: string;
   contextUsage?: ThreadContextUsage | null;
@@ -371,6 +391,12 @@ export type AgentSession = {
   permissionDenials: string[];
   /** Team names created in this session via TeamCreate tool */
   teamNames?: string[];
+  /** git HEAD hash when session started — used to compute session diff */
+  sessionStartHash?: string;
+  /** files changed during the session (populated when session ends) */
+  sessionChangedFiles?: string[];
+  /** Interleaved content blocks: text chunks and tool calls in order of occurrence */
+  contentBlocks?: ContentBlock[];
   createdAt: number;
   updatedAt: number;
 };
@@ -382,6 +408,7 @@ export type Thread = {
   workspaceDirs: string[];
   sessions: AgentSession[];
   status: "idle" | "running" | "needs_attention" | "done";
+  previewUrl?: string;
 };
 
 export type ContextAttachment = ContextFileRef;
@@ -394,6 +421,8 @@ export type ToolTimelineItem = {
   status: "pending" | "completed" | "error";
   startedAt: number;
   finishedAt: number | null;
+  /** Raw input for file manipulation tools (Edit/Write) — used to render diffs */
+  rawInput?: Record<string, unknown>;
 };
 
 export type SubagentInfo = {

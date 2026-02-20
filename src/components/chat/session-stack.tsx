@@ -1,6 +1,15 @@
-import { useState } from "react";
-import { AlertCircle, LayoutTemplate, Loader2, Square, Terminal } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  AlertCircle,
+  File,
+  GitBranch,
+  LayoutTemplate,
+  Loader2,
+  Square,
+  Terminal
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import type { AgentSession, Thread } from "@/lib/chat-types";
 import { ChatMessages } from "@/components/chat/chat-messages";
 import { ToolApproval, AskUserQuestion } from "@/components/chat/tool-approval";
@@ -9,6 +18,7 @@ import { AuthExpiredBanner } from "@/components/chat/auth-expired-banner";
 import { ExportButton } from "@/components/chat/export-button";
 import { ThreadTemplates } from "@/components/chat/thread-templates";
 import { useChatStore } from "@/stores/chat-store";
+import { useWorkspaceStore } from "@/stores/workspace-store";
 
 export type SessionStackProps = {
   thread: Thread;
@@ -17,6 +27,8 @@ export type SessionStackProps = {
   latestTerminalError: string;
   onInsertLatestTerminalError: (setInput: React.Dispatch<React.SetStateAction<string>>) => void;
   setTerminalOpen: (value: boolean | ((current: boolean) => boolean)) => void;
+  onOpenInPreview?: (url: string) => void;
+  onOpenFile?: (relativePath: string) => void;
 };
 
 const SUGGESTIONS = [
@@ -81,7 +93,88 @@ function EmptyState({
   );
 }
 
-function SessionHeader({ session, threadTitle }: { session: AgentSession; threadTitle?: string }) {
+function SessionDiffBadge({ files, workspaceDir }: { files: string[]; workspaceDir?: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const handleOpenFile = (relativePath: string) => {
+    if (!workspaceDir) return;
+    const ws = useWorkspaceStore.getState();
+    // Search by relativePath to avoid rootPath format mismatch on Windows
+    const match = ws.fileMentionIndex.find((item) => item.relativePath === relativePath);
+    if (match) {
+      void ws.onOpenEditorFile(match.key);
+    } else {
+      const slash = workspaceDir.includes("\\") ? "\\" : "/";
+      void ws.openFileByAbsolutePath(
+        `${workspaceDir}${slash}${relativePath.replace(/\//g, slash)}`
+      );
+    }
+    setOpen(false);
+  };
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          "flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] transition-colors",
+          open
+            ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+            : "text-emerald-600/70 dark:text-emerald-400/60 hover:bg-emerald-500/10 hover:text-emerald-600 dark:hover:text-emerald-400"
+        )}
+        title="Ficheiros alterados nesta sessão"
+      >
+        <GitBranch className="size-3" />
+        <span>
+          {files.length} {files.length === 1 ? "ficheiro" : "ficheiros"}
+        </span>
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full z-20 mt-1 min-w-56 max-w-xs overflow-hidden rounded-lg border border-border/60 bg-background shadow-lg">
+          <div className="border-b border-border/40 px-3 py-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+            Ficheiros alterados
+          </div>
+          <div className="max-h-52 overflow-y-auto py-1">
+            {files.map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => handleOpenFile(f)}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-[11px] text-muted-foreground/80 hover:bg-muted/30 hover:text-foreground transition-colors"
+              >
+                <File className="size-3 shrink-0 text-muted-foreground/40" />
+                <span className="truncate">{f}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SessionHeader({
+  session,
+  threadTitle,
+  workspaceDir
+}: {
+  session: AgentSession;
+  threadTitle?: string;
+  workspaceDir?: string;
+}) {
   const onAbortSession = useChatStore((s) => s.onAbortSession);
   const isRunning = session.status === "running";
   const isAwaiting = session.status === "awaiting_approval";
@@ -89,9 +182,13 @@ function SessionHeader({ session, threadTitle }: { session: AgentSession; thread
 
   return (
     <div className="flex items-center gap-2 border-b border-border/50 bg-muted/10 px-4 py-2">
-      <span className="flex-1 truncate text-sm font-medium text-foreground/70">
-        {session.title}
-      </span>
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* Thread title as context label — only shown when it differs from session title */}
+        {threadTitle && threadTitle !== session.title && (
+          <span className="truncate text-[10px] text-muted-foreground/40">{threadTitle}</span>
+        )}
+        <span className="truncate text-sm font-medium text-foreground/70">{session.title}</span>
+      </div>
       {isRunning && (
         <span className="flex items-center gap-1 text-[11px] text-blue-500">
           <Loader2 className="size-3 animate-spin" />
@@ -99,8 +196,9 @@ function SessionHeader({ session, threadTitle }: { session: AgentSession; thread
         </span>
       )}
       {isAwaiting && (
-        <span className="text-[11px] font-medium text-yellow-600 dark:text-yellow-400">
-          aguarda aprovação
+        <span className="flex items-center gap-1 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+          <AlertCircle className="size-3" />
+          aguarda aprovação ↓
         </span>
       )}
       {isError && (
@@ -108,6 +206,9 @@ function SessionHeader({ session, threadTitle }: { session: AgentSession; thread
           <AlertCircle className="size-3" />
           erro
         </span>
+      )}
+      {session.sessionChangedFiles && session.sessionChangedFiles.length > 0 && (
+        <SessionDiffBadge files={session.sessionChangedFiles} workspaceDir={workspaceDir} />
       )}
       {(isRunning || isAwaiting) && session.requestId && (
         <Button
@@ -132,7 +233,9 @@ export function SessionStack({
   modelOptions,
   latestTerminalError,
   onInsertLatestTerminalError,
-  setTerminalOpen
+  setTerminalOpen,
+  onOpenInPreview,
+  onOpenFile
 }: SessionStackProps) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const onApprove = useChatStore((s) => s.onApprove);
@@ -140,8 +243,23 @@ export function SessionStack({
   const onAnswerQuestion = useChatStore((s) => s.onAnswerQuestion);
 
   const [input, setInput] = useState("");
-  const [effort, setEffort] = useState("medium");
+  const [effort, setEffort] = useState(() => localStorage.getItem("claude-effort") ?? "medium");
   const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
+
+  const workspaceDir = thread.workspaceDirs[0] ?? "";
+
+  function handleOpenFile(relativePath: string) {
+    if (onOpenFile) {
+      onOpenFile(relativePath);
+    } else if (workspaceDir) {
+      void useWorkspaceStore.getState().onOpenEditorFile(`${workspaceDir}/${relativePath}`);
+    }
+  }
+
+  function handleSetEffort(value: string) {
+    localStorage.setItem("claude-effort", value);
+    setEffort(value);
+  }
 
   // Active session for this thread
   const activeSession = thread.sessions.find((s) => s.id === activeSessionId) ?? null;
@@ -174,13 +292,20 @@ export function SessionStack({
           />
         ) : (
           <div className="flex min-h-0 flex-1 flex-col">
-            <SessionHeader session={currentSession} threadTitle={thread.title} />
+            <SessionHeader
+              session={currentSession}
+              threadTitle={thread.title}
+              workspaceDir={workspaceDir}
+            />
             <div className="min-h-0 flex-1 flex flex-col">
               <ChatMessages
                 key={currentSession.id}
                 chatContainerMax={chatContainerMax}
                 session={currentSession}
                 showCommits={false}
+                workspaceDir={workspaceDir}
+                onOpenInPreview={onOpenInPreview}
+                onOpenFile={handleOpenFile}
               />
             </div>
             {currentSession.pendingApproval && (
@@ -208,10 +333,11 @@ export function SessionStack({
         latestTerminalError={latestTerminalError}
         modelOptions={modelOptions}
         onInsertLatestTerminalError={() => onInsertLatestTerminalError(setInput)}
-        setEffort={setEffort}
+        setEffort={handleSetEffort}
         setInput={setInput}
         setTerminalOpen={setTerminalOpen}
         targetSessionId={targetSessionId}
+        workspaceDir={workspaceDir}
       />
     </div>
   );

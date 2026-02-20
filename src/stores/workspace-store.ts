@@ -46,6 +46,7 @@ type WorkspaceState = {
   onAddTreePathToContext: (treePath: string) => Promise<void>;
   onRemoveTreePathFromContext: (treePath: string) => Promise<void>;
   onOpenEditorFile: (treePath: string) => Promise<void>;
+  openFileByAbsolutePath: (absolutePath: string) => Promise<void>;
   onEditorTabContentChange: (tabId: string, content: string) => void;
   onSaveEditorTab: (tabId: string) => Promise<void>;
   onCloseEditorTab: (tabId: string) => void;
@@ -291,6 +292,41 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         activeEditorTabId: nextTab.id
       }));
       setStatus(`Opened ${match.relativePath}`);
+    } catch (error) {
+      setStatus((error as Error).message);
+    }
+  },
+
+  openFileByAbsolutePath: async (absolutePath) => {
+    const setStatus = useSettingsStore.getState().setStatus;
+    const tabId = `abs::${absolutePath}`;
+    const { editorTabs } = get();
+    const existing = editorTabs.find((tab) => tab.id === tabId);
+    if (existing) {
+      set({ activeEditorTabId: existing.id });
+      return;
+    }
+    try {
+      const result = await window.desktop.workspace.readFile(absolutePath);
+      // Derive rootPath/relativePath from the absolute path
+      const sep = absolutePath.includes("\\") ? "\\" : "/";
+      const parts = absolutePath.replace(/\\/g, "/").split("/");
+      const relativePath = parts[parts.length - 1];
+      const rootPath = parts.slice(0, -1).join(sep);
+      const nextTab: EditorTab = {
+        id: tabId,
+        rootPath,
+        relativePath: result.relativePath || relativePath,
+        absolutePath: result.absolutePath || absolutePath,
+        content: result.content,
+        dirty: false,
+        saving: false
+      };
+      set((state) => ({
+        editorTabs: [...state.editorTabs, nextTab],
+        activeEditorTabId: nextTab.id
+      }));
+      setStatus(`Opened ${relativePath}`);
     } catch (error) {
       setStatus((error as Error).message);
     }

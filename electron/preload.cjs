@@ -32,12 +32,17 @@ contextBridge.exposeInMainWorld("desktop", {
     openProject: (ideId) => ipcRenderer.invoke("ide:openProject", ideId)
   },
   git: {
-    getSummary: () => ipcRenderer.invoke("git:getSummary"),
-    getRecentCommits: (limit) => ipcRenderer.invoke("git:getRecentCommits", limit),
-    initRepo: () => ipcRenderer.invoke("git:initRepo"),
-    checkoutBranch: (branchName) => ipcRenderer.invoke("git:checkoutBranch", branchName),
-    commit: (message) => ipcRenderer.invoke("git:commit", message),
-    createPr: (payload) => ipcRenderer.invoke("git:createPr", payload)
+    getSummary: (cwd) => ipcRenderer.invoke("git:getSummary", cwd),
+    getRecentCommits: (limit, cwd) => ipcRenderer.invoke("git:getRecentCommits", limit, cwd),
+    initRepo: (cwd) => ipcRenderer.invoke("git:initRepo", cwd),
+    checkoutBranch: (branchName, cwd) => ipcRenderer.invoke("git:checkoutBranch", branchName, cwd),
+    commit: (message, cwd) => ipcRenderer.invoke("git:commit", message, cwd),
+    push: (cwd) => ipcRenderer.invoke("git:push", cwd),
+    pull: (cwd) => ipcRenderer.invoke("git:pull", cwd),
+    fetch: (cwd) => ipcRenderer.invoke("git:fetch", cwd),
+    createPr: (payload) => ipcRenderer.invoke("git:createPr", payload),
+    getHeadHash: (cwd) => ipcRenderer.invoke("git:getHeadHash", { cwd }),
+    getChangedFiles: (since, cwd) => ipcRenderer.invoke("git:getChangedFiles", { since, cwd })
   },
   terminal: {
     createSession: (payload) => ipcRenderer.invoke("terminal:createSession", payload),
@@ -57,7 +62,19 @@ contextBridge.exposeInMainWorld("desktop", {
     }
   },
   app: {
-    notify: (payload) => ipcRenderer.invoke("app:notify", payload)
+    notify: (payload) => ipcRenderer.invoke("app:notify", payload),
+    checkForUpdates: () => ipcRenderer.invoke("app:checkForUpdates"),
+    installUpdate: () => ipcRenderer.invoke("app:installUpdate"),
+    onUpdateAvailable: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("app:updateAvailable", listener);
+      return () => ipcRenderer.removeListener("app:updateAvailable", listener);
+    },
+    onUpdateDownloaded: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("app:updateDownloaded", listener);
+      return () => ipcRenderer.removeListener("app:updateDownloaded", listener);
+    }
   },
   mcp: {
     getServers: () => ipcRenderer.invoke("mcp:getServers"),

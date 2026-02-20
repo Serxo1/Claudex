@@ -45,10 +45,17 @@ function isRecoverableResumeError(message) {
   return /session id/i.test(message) && /(not found|does not exist|invalid|expired|cannot)/i.test(message);
 }
 
+function supportsEffort(model) {
+  if (typeof model !== "string" || !model.trim()) return false;
+  return !/haiku/i.test(model);
+}
+
 function shouldApplyEffort(model, effort) {
   if (typeof effort !== "string" || !effort.trim()) return false;
-  if (typeof model !== "string" || !model.trim()) return false;
-  return /opus/i.test(model);
+  if (!supportsEffort(model)) return false;
+  const e = effort.trim();
+  if (e === "max") return /opus/i.test(model);
+  return ["low", "medium", "high"].includes(e);
 }
 
 function extractTextFromClaudeMessageContent(content) {

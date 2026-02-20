@@ -27,7 +27,7 @@ interface ToolApprovalProps {
 
 export function ToolApproval({ approval, onApprove, onDeny }: ToolApprovalProps) {
   const [loading, setLoading] = useState<"approve" | "always" | "deny" | null>(null);
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   const addRule = usePermissionsStore((s) => s.addRule);
 
   const suggestedRule = deriveAllowRule(approval.toolName, approval.input);
@@ -183,17 +183,26 @@ export function AskUserQuestion({ question, onAnswer }: AskUserQuestionProps) {
                 return (
                   <button
                     className={cn(
-                      "rounded-lg border px-3 py-1.5 text-left text-xs transition-all duration-100",
+                      "flex flex-col gap-0.5 rounded-lg border px-3 py-2 text-left text-xs transition-all duration-100",
                       selected
                         ? "border-primary/50 bg-primary/10 text-primary shadow-sm"
                         : "border-border/50 bg-background/40 text-muted-foreground hover:border-border hover:bg-background/70 hover:text-foreground"
                     )}
                     key={option.label}
                     onClick={() => handleSelect(q.question, option.label, q.multiSelect)}
-                    title={option.description}
                     type="button"
                   >
-                    {option.label}
+                    <span className="font-medium">{option.label}</span>
+                    {option.description && (
+                      <span
+                        className={cn(
+                          "text-[10px] leading-relaxed",
+                          selected ? "text-primary/70" : "text-muted-foreground/60"
+                        )}
+                      >
+                        {option.description}
+                      </span>
+                    )}
                   </button>
                 );
               })}

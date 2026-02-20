@@ -13,8 +13,7 @@ import {
   deriveThreadTitle,
   makeMessage,
   normalizeErrorMessage,
-  patchSession,
-  supportsMaxEffort
+  patchSession
 } from "@/lib/chat-utils";
 import { makeDefaultThread, safeLoadThreads } from "@/lib/chat-persistence";
 import { _activeStreams, createStreamHandler } from "@/lib/stream-handler";
@@ -58,10 +57,18 @@ type ChatState = {
     effort?: string,
     targetSessionId?: string | null
   ) => Promise<void>;
+  enqueueMessage: (
+    sessionId: string,
+    text: string,
+    contextFiles: ContextAttachment[],
+    effort: string
+  ) => void;
+  cancelQueuedMessage: (sessionId: string) => void;
   onApprove: (approvalId: string, input: Record<string, unknown>) => Promise<void>;
   onDeny: (approvalId: string) => Promise<void>;
   onAnswerQuestion: (approvalId: string, answers: Record<string, string>) => Promise<void>;
   onAbortSession: (sessionId: string) => Promise<void>;
+  setThreadPreviewUrl: (threadId: string, url: string) => void;
   addWorkspaceDirToThread: (threadId: string, dir: string) => void;
   removeWorkspaceDirFromThread: (threadId: string, dir: string) => void;
   deleteThread: (threadId: string) => void;
@@ -132,9 +139,97 @@ export const useChatStore = create<ChatState>((set, get) => ({
   // ---------------------------------------------------------------------------
 
   initStreamListener: () => {
+    const onRunDone = (threadId: string, sessionId: string) => {
+      const session = get()
+        .threads.find((t) => t.id === threadId)
+        ?.sessions.find((s) => s.id === sessionId);
+      const qm = session?.queuedMessage;
+      if (!qm) return;
+
+      // Clear queued message first
+      set((s) => ({
+        threads: patchSession(s.threads, threadId, sessionId, { queuedMessage: null })
+      }));
+
+      // Auto-send: replicate Path A of onSubmit
+      const settings = useSettingsStore.getState().settings;
+      const threads = get().threads;
+      const activeThread = threads.find((t) => t.id === threadId);
+      const targetSession = activeThread?.sessions.find((s) => s.id === sessionId);
+      if (!settings || !activeThread || !targetSession) return;
+
+      const isSlashCommand = /^\/\S+/.test(qm.text.trim());
+      const contextSuffix =
+        !isSlashCommand && qm.contextFiles.length > 0
+          ? `\n\nContext files:\n${qm.contextFiles
+              .map((file) =>
+                file.isImage
+                  ? `- ${file.absolutePath}`
+                  : `- ${file.relativePath} (${file.absolutePath})`
+              )
+              .join("\n")}`
+          : "";
+      const finalPrompt = `${qm.text.trim()}${contextSuffix}`;
+
+      const userMessage = makeMessage(
+        "user",
+        qm.text.trim(),
+        qm.contextFiles.length > 0 ? qm.contextFiles : undefined
+      );
+      const assistantMessage = makeMessage("assistant", "");
+      const messagesForSend = [{ id: userMessage.id, role: "user" as const, content: finalPrompt }];
+
+      set((s) => ({
+        threads: patchSession(s.threads, threadId, sessionId, (sess) => ({
+          messages: [...sess.messages, userMessage, assistantMessage],
+          status: "running" as const,
+          isThinking: true,
+          reasoningText: "",
+          toolTimeline: [],
+          subagents: [],
+          contentBlocks: [],
+          runningStartedAt: Date.now(),
+          updatedAt: Date.now()
+        }))
+      }));
+
+      void (async () => {
+        try {
+          const started = await window.desktop.chat.startStream({
+            messages: messagesForSend,
+            effort: qm.effort || undefined,
+            contextFiles: qm.contextFiles,
+            resumeSessionId: targetSession.sessionId ?? "",
+            workspaceDirs: activeThread.workspaceDirs
+          });
+          _activeStreams.set(started.requestId, { threadId, sessionId });
+          set((s) => ({
+            threads: patchSession(s.threads, threadId, sessionId, { requestId: started.requestId })
+          }));
+          useSettingsStore.getState().setStatus(`Streaming via ${started.provider}...`);
+        } catch (error) {
+          const messageText = normalizeErrorMessage((error as Error).message);
+          set((s) => ({
+            threads: patchSession(s.threads, threadId, sessionId, (sess) => ({
+              messages: sess.messages.map((msg, i) =>
+                i === sess.messages.length - 1 && msg.role === "assistant"
+                  ? { ...msg, content: `Error: ${messageText}` }
+                  : msg
+              ),
+              status: "error" as const,
+              isThinking: false,
+              reasoningText: ""
+            }))
+          }));
+          useSettingsStore.getState().setStatus(messageText);
+        }
+      })();
+    };
+
     const handler = createStreamHandler(
       set as Parameters<typeof createStreamHandler>[0],
-      get as Parameters<typeof createStreamHandler>[1]
+      get as Parameters<typeof createStreamHandler>[1],
+      onRunDone
     );
     const unsubscribe = window.desktop.chat.onStreamEvent(handler);
     set({ _unsubscribeStream: unsubscribe });
@@ -170,6 +265,42 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {
       // Ignore — skills are best-effort
     }
+  },
+
+  // ---------------------------------------------------------------------------
+  // Message queue actions
+  // ---------------------------------------------------------------------------
+
+  enqueueMessage: (sessionId, text, contextFiles, effort) => {
+    const { threads } = get();
+    let foundThreadId: string | null = null;
+    for (const thread of threads) {
+      if (thread.sessions.some((s) => s.id === sessionId)) {
+        foundThreadId = thread.id;
+        break;
+      }
+    }
+    if (!foundThreadId) return;
+    set((s) => ({
+      threads: patchSession(s.threads, foundThreadId!, sessionId, {
+        queuedMessage: { text, contextFiles, effort }
+      })
+    }));
+  },
+
+  cancelQueuedMessage: (sessionId) => {
+    const { threads } = get();
+    let foundThreadId: string | null = null;
+    for (const thread of threads) {
+      if (thread.sessions.some((s) => s.id === sessionId)) {
+        foundThreadId = thread.id;
+        break;
+      }
+    }
+    if (!foundThreadId) return;
+    set((s) => ({
+      threads: patchSession(s.threads, foundThreadId!, sessionId, { queuedMessage: null })
+    }));
   },
 
   // ---------------------------------------------------------------------------
@@ -360,9 +491,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           messages: [...sess.messages, userMessage, assistantMessage],
           status: "running" as const,
           isThinking: true,
-          reasoningText: "Preparing execution...",
+          reasoningText: "",
           toolTimeline: [],
           subagents: [],
+          contentBlocks: [],
           runningStartedAt: Date.now(),
           updatedAt: Date.now()
         }))
@@ -371,10 +503,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       try {
         const started = await window.desktop.chat.startStream({
           messages: messagesForSend,
-          effort:
-            supportsMaxEffort(settings.model, useSettingsStore.getState().dynamicModels) && effort
-              ? effort
-              : undefined,
+          effort: effort || undefined,
           contextFiles: contextForSend,
           resumeSessionId: targetSession.sessionId ?? "",
           workspaceDirs: activeThread.workspaceDirs
@@ -416,7 +545,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       requestId: undefined,
       toolTimeline: [],
       subagents: [],
-      reasoningText: "Preparing execution...",
+      reasoningText: "",
       isThinking: true,
       runningStartedAt: Date.now(),
       compactCount: 0,
@@ -445,10 +574,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const started = await window.desktop.chat.startStream({
         messages: messagesForSend,
-        effort:
-          supportsMaxEffort(settings.model, useSettingsStore.getState().dynamicModels) && effort
-            ? effort
-            : undefined,
+        effort: effort || undefined,
         contextFiles: contextForSend,
         resumeSessionId: "",
         workspaceDirs: activeThread.workspaceDirs
@@ -509,6 +635,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   // ---------------------------------------------------------------------------
   // CRUD actions
   // ---------------------------------------------------------------------------
+
+  setThreadPreviewUrl: (threadId, url) => {
+    set((state) => ({
+      threads: state.threads.map((t) => (t.id === threadId ? { ...t, previewUrl: url } : t))
+    }));
+  },
 
   addWorkspaceDirToThread: (threadId, dir) => {
     set((state) => ({
