@@ -155,8 +155,6 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "installerIcon": "public/logo.png",
-      "uninstallerIcon": "public/logo.png",
       "deleteAppDataOnUninstall": false
     },
     "npmRebuild": false
