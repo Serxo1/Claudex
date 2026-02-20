@@ -458,6 +458,16 @@ export type TeamSnapshot = {
   inboxes: Record<string, TeamInboxMessage[]>;
 };
 
+// ---------------------------------------------------------------------------
+// TodoWrite todos (Claude Code session todos — ~/.claude/todos/{sessionId}-agent-{sessionId}.json)
+// ---------------------------------------------------------------------------
+
+export type TodoItem = {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+  activeForm?: string;
+};
+
 export type EditorTab = {
   id: string;
   rootPath: string;

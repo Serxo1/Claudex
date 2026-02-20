@@ -47,7 +47,6 @@ type SettingsState = {
   knownModelValues: string[];
   // Models that appeared for the first time this session — triggers announcement
   newlyDiscoveredModels: DynamicModel[];
-
   setStatus: (value: string) => void;
   setApiKeyDraft: (value: string) => void;
   refreshSettings: () => Promise<void>;
