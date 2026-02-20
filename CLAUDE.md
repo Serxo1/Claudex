@@ -69,7 +69,7 @@ O GitHub Actions (`.github/workflows/release.yml`) faz build Windows + macOS e p
 ### Code signing + Notarização macOS
 
 - Requer certificado **"Developer ID Application"** da Apple Developer account exportado como `.p12`.
-- Notarização é feita automaticamente via `mac.notarize.teamId` no `package.json` (electron-builder 24+).
+- Notarização é feita automaticamente via `mac.notarize: true` no `package.json` (electron-builder 26.x). **Não usar objecto** `{ teamId: "..." }` — essa sintaxe não é válida nesta versão e quebra também a build Windows.
 - Secrets necessários no GitHub Actions (e localmente para `dist:mac`):
   - `CSC_LINK` — base64 do `.p12`: `base64 -i cert.p12 | tr -d '\n'`
   - `CSC_KEY_PASSWORD` — password do `.p12`
