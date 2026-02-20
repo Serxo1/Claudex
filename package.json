@@ -129,24 +129,9 @@
     ],
     "win": {
       "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "msi",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "signingHashAlgorithms": [
-        "sha256"
-      ],
-      "certificateFile": "${env.WIN_CERT_PATH}",
-      "certificatePassword": "${env.WIN_CERT_PASSWORD}"
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "msi", "arch": ["x64"] }
+      ]
     },
     "mac": {
       "target": [
