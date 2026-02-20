@@ -89,9 +89,13 @@ function SessionHeader({ session, threadTitle }: { session: AgentSession; thread
 
   return (
     <div className="flex items-center gap-2 border-b border-border/50 bg-muted/10 px-4 py-2">
-      <span className="flex-1 truncate text-sm font-medium text-foreground/70">
-        {session.title}
-      </span>
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* Thread title as context label — only shown when it differs from session title */}
+        {threadTitle && threadTitle !== session.title && (
+          <span className="truncate text-[10px] text-muted-foreground/40">{threadTitle}</span>
+        )}
+        <span className="truncate text-sm font-medium text-foreground/70">{session.title}</span>
+      </div>
       {isRunning && (
         <span className="flex items-center gap-1 text-[11px] text-blue-500">
           <Loader2 className="size-3 animate-spin" />
@@ -99,8 +103,9 @@ function SessionHeader({ session, threadTitle }: { session: AgentSession; thread
         </span>
       )}
       {isAwaiting && (
-        <span className="text-[11px] font-medium text-yellow-600 dark:text-yellow-400">
-          aguarda aprovação
+        <span className="flex items-center gap-1 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+          <AlertCircle className="size-3" />
+          aguarda aprovação ↓
         </span>
       )}
       {isError && (

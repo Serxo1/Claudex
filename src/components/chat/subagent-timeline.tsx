@@ -119,9 +119,9 @@ function AgentCard({ agent }: { agent: SubagentInfo }) {
             )}
           </div>
 
-          {/* Summary */}
+          {/* Summary — fully expanded, no line-clamp */}
           {summaryOpen && agent.summary && (
-            <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground/70 line-clamp-4">
+            <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground/70">
               {agent.summary}
             </p>
           )}
