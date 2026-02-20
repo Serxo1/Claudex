@@ -37,29 +37,27 @@ git commit -m "tipo: descrição"
 git push origin <branch>
 ```
 
-### Criar um release público (fluxo híbrido)
-
-O workflow é **híbrido**: CI faz apenas a build Windows; a build macOS é feita localmente no Mac.
-O `electron-builder` coordena automaticamente — cria o GitHub Release no primeiro upload e os restantes publicam no mesmo release.
+### Criar um release público (CI faz build automático)
 
 ```bash
 # 1. Actualizar version em package.json (ex: "0.1.0" → "0.2.0")
-# 2. Commit + tag + push (dispara CI para Windows)
+# 2. Commit + tag + push
 git add package.json
 git commit -m "chore: release v0.2.0"
 git tag v0.2.0
 git push origin main --tags
-
-# 3. No Mac local (em paralelo ou depois do CI)
-npm run dist:mac -- --publish always
-# Requer GH_TOKEN no ambiente: export GH_TOKEN=ghp_xxxx (adicionar ao ~/.zshrc)
 ```
 
-O GitHub Actions (`.github/workflows/release.yml`) faz **apenas** a build Windows e publica no GitHub Release. O `electron-updater` nos clientes detecta o novo release via `GH_TOKEN` (secret configurado no repo).
+O GitHub Actions (`.github/workflows/release.yml`) faz build Windows + macOS e publica o GitHub Release automaticamente. O `electron-updater` nos clientes detecta o novo release via `GH_TOKEN` (secret configurado no repo).
 
 > **Nunca fazer force-push em `main`** — os instaladores publicados referenciam os commits por hash.
 
-> **Build macOS no CI**: se necessário (ex: sem Mac disponível), usar `macos-14` (Sonoma) — **nunca `macos-latest`** (Sequoia tem bugs conhecidos com `codesign` em CI). Usar `apple-actions/import-codesign-certs@v3` para setup do keychain.
+### Notas críticas do CI macOS
+
+- Usar **`macos-14`** (Sonoma) — `macos-latest` (Sequoia) trava no `codesign`
+- Usar **`apple-actions/import-codesign-certs@v3`** para setup do keychain — faz `set-key-partition-list` internamente, evitando prompts interactivos
+- **`timeout-minutes: 60`** — a notarização da Apple pode demorar 10–30 min
+- Passar **`CSC_KEYCHAIN: signing_temp.keychain`** para o electron-builder encontrar o certificado importado pela action
 
 ## Peculiaridades da Build (electron-builder)
 
