@@ -15,7 +15,7 @@ const DEFAULT_SETTINGS = {
   encryptedApiKey: "",
   claudeCliSessionId: "",
   preferredIde: "cursor",
-  workspaceDirs: []
+  workspaceDirs: [],
 };
 
 let _app = null;
@@ -96,7 +96,7 @@ function publicSettings(settings) {
     hasClaudeCliSession: Boolean(settings.claudeCliSessionId),
     preferredIde: settings.preferredIde,
     workspaceDirs: Array.isArray(settings.workspaceDirs) ? settings.workspaceDirs : [],
-    encryptionSecure: _encryptionSecure
+    encryptionSecure: _encryptionSecure,
   };
 }
 
