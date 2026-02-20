@@ -55,17 +55,19 @@ jobs:
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
 
-          # Import cert — -A allows all apps to access the key without UI prompt
+          # Import cert
           security import /tmp/certificate.p12 \
             -k "$KEYCHAIN_PATH" \
             -P "$CSC_KEY_PASSWORD" \
             -T /usr/bin/codesign \
-            -T /usr/bin/productbuild \
-            -A
+            -T /usr/bin/productbuild
           rm /tmp/certificate.p12
 
-          # Add to keychain search list
+          # Add to keychain search list BEFORE set-key-partition-list
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          # Re-unlock before partition list (keychain may have re-locked)
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
 
           # Grant codesign access without UI dialog (critical for headless CI)
           security set-key-partition-list \
