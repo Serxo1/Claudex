@@ -73,11 +73,12 @@ jobs:
             -s -k "$KEYCHAIN_PASS" \
             "$KEYCHAIN_PATH"
 
-          # Find and export the identity name so electron-builder uses our keychain
+          # Find and export the identity name (without "Developer ID Application: " prefix)
+          # electron-builder rejects the full string — it wants just "Name (TEAMID)"
           IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
             | grep "Developer ID Application" \
             | head -1 \
-            | sed 's/.*"\(.*\)".*/\1/')
+            | sed 's/.*"Developer ID Application: \(.*\)".*/\1/')
 
           echo "Found identity: $IDENTITY"
           echo "CSC_NAME=$IDENTITY" >> $GITHUB_ENV
