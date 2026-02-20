@@ -44,14 +44,15 @@ jobs:
         run: |
           set -eo pipefail
 
-          KEYCHAIN_PASS=$(openssl rand -base64 32)
-          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASS="ci-build-temp"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
 
           echo "$CSC_LINK" | base64 --decode > /tmp/certificate.p12
 
           security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -t 3600 "$KEYCHAIN_PATH"
 
           security import /tmp/certificate.p12 \
             -k "$KEYCHAIN_PATH" \
@@ -60,11 +61,7 @@ jobs:
             -T /usr/bin/productbuild
           rm /tmp/certificate.p12
 
-          # Adiciona ao search list mantendo os keychains existentes
-          security list-keychains -d user -s "$KEYCHAIN_PATH" \
-            $(security list-keychains -d user | tr -d '"')
-
-          # Passo crítico: concede acesso ao codesign sem prompts interativos
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PASS" \
