@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, CircleAlert, Clock3, Copy, CopyCheck, Wrench } from "lucide-react";
+import { ChevronDown, CircleAlert, Clock3, Copy, CopyCheck, File, Wrench } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
 import { SubagentTimeline } from "@/components/chat/subagent-timeline";
 import { TeamPanel } from "@/components/chat/team-panel";
@@ -80,10 +80,11 @@ function CopyButton({ content }: { content: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// File diff — shown inside expanded ToolPill for Edit/Write tools
+// File diff — prominent conversation-style block for Edit/Write tools
 // ---------------------------------------------------------------------------
 
-const MAX_DIFF_LINES = 40;
+const FILE_DIFF_TOOLS = new Set(["Edit", "Write", "MultiEdit", "CreateFile"]);
+const MAX_DIFF_LINES = 80;
 
 function FileDiff({ item }: { item: AgentSession["toolTimeline"][number] }) {
   const raw = item.rawInput;
@@ -93,88 +94,112 @@ function FileDiff({ item }: { item: AgentSession["toolTimeline"][number] }) {
   const isWrite = item.name === "Write" || item.name === "CreateFile";
   const isEdit = item.name === "Edit" || item.name === "MultiEdit";
 
-  if (isEdit && typeof raw.old_string === "string" && typeof raw.new_string === "string") {
-    const oldLines = (raw.old_string as string).split("\n");
-    const newLines = (raw.new_string as string).split("\n");
-    const allLines = [
-      ...oldLines.map((l) => ({ sign: "-" as const, text: l })),
-      ...newLines.map((l) => ({ sign: "+" as const, text: l }))
-    ];
-    const visible = allLines.slice(0, MAX_DIFF_LINES);
-    const hidden = allLines.length - visible.length;
-    return (
-      <div className="mt-1.5 overflow-hidden rounded-md border border-border/25 bg-muted/8 font-mono text-[10px]">
-        {filePath && (
-          <div className="border-b border-border/20 px-2.5 py-1 text-muted-foreground/40">
-            {filePath}
-          </div>
-        )}
-        <div className="max-h-48 overflow-y-auto px-2.5 py-1.5">
-          {visible.map((line, i) => (
+  const buildEditLines = (oldStr: string, newStr: string): { sign: "-" | "+"; text: string }[] => [
+    ...oldStr.split("\n").map((l) => ({ sign: "-" as const, text: l })),
+    ...newStr.split("\n").map((l) => ({ sign: "+" as const, text: l }))
+  ];
+
+  let allLines: { sign: "-" | "+"; text: string }[] = [];
+
+  if (isEdit) {
+    if (Array.isArray(raw.edits)) {
+      for (
+        let i = 0;
+        i < (raw.edits as Array<{ old_string: string; new_string: string }>).length;
+        i++
+      ) {
+        const edit = (raw.edits as Array<{ old_string: string; new_string: string }>)[i];
+        if (i > 0) allLines.push({ sign: "+" as const, text: "\u00b7\u00b7\u00b7" });
+        allLines.push(...buildEditLines(edit.old_string ?? "", edit.new_string ?? ""));
+      }
+    } else if (typeof raw.old_string === "string" && typeof raw.new_string === "string") {
+      allLines = buildEditLines(raw.old_string, raw.new_string);
+    }
+  } else if (isWrite && typeof raw.content === "string") {
+    allLines = (raw.content as string).split("\n").map((l) => ({ sign: "+" as const, text: l }));
+  }
+
+  if (!allLines.length) return null;
+
+  const visible = allLines.slice(0, MAX_DIFF_LINES);
+  const hidden = allLines.length - visible.length;
+
+  const isSeparator = (text: string) => text === "\u00b7\u00b7\u00b7";
+  const badge = isWrite ? "Criado" : "Editado";
+  const badgeClass = isWrite
+    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+    : "bg-blue-500/10 text-blue-600 dark:text-blue-400";
+
+  return (
+    <div className="w-full overflow-hidden rounded-xl border border-border/40 bg-background shadow-sm">
+      {/* File header */}
+      <div className="flex items-center gap-2 border-b border-border/30 bg-muted/20 px-3 py-2">
+        <File className="size-3.5 shrink-0 text-muted-foreground/40" />
+        <span className="flex-1 truncate font-mono text-[11px] text-muted-foreground/70">
+          {filePath ?? item.name}
+        </span>
+        <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", badgeClass)}>
+          {badge}
+        </span>
+      </div>
+      {/* Diff lines */}
+      <div className="max-h-80 overflow-y-auto">
+        {visible.map((line, i) =>
+          isSeparator(line.text) ? (
+            <div
+              key={i}
+              className="border-y border-border/15 bg-muted/10 px-3 py-0.5 font-mono text-[10px] text-muted-foreground/30"
+            >
+              ···
+            </div>
+          ) : (
             <div
               key={i}
               className={cn(
-                "whitespace-pre leading-5",
+                "flex gap-2 px-3 font-mono text-[11px] leading-[1.7]",
                 line.sign === "-"
-                  ? "text-destructive/60"
-                  : "text-emerald-600/70 dark:text-emerald-400/70"
+                  ? "bg-red-500/[0.05] text-red-700 dark:text-red-400/80"
+                  : "bg-emerald-500/[0.05] text-emerald-700 dark:text-emerald-400/80"
               )}
             >
-              {line.sign} {line.text}
+              <span className="w-3 shrink-0 select-none text-muted-foreground/30">{line.sign}</span>
+              <span className="whitespace-pre">{line.text}</span>
             </div>
-          ))}
-          {hidden > 0 && <div className="pt-1 text-muted-foreground/30">... +{hidden} linhas</div>}
-        </div>
-      </div>
-    );
-  }
-
-  if (isWrite && typeof raw.content === "string") {
-    const lines = (raw.content as string).split("\n");
-    const visible = lines.slice(0, MAX_DIFF_LINES);
-    const hidden = lines.length - visible.length;
-    return (
-      <div className="mt-1.5 overflow-hidden rounded-md border border-border/25 bg-muted/8 font-mono text-[10px]">
-        {filePath && (
-          <div className="border-b border-border/20 px-2.5 py-1 text-muted-foreground/40">
-            {filePath}
+          )
+        )}
+        {hidden > 0 && (
+          <div className="px-3 py-1.5 font-mono text-[10px] text-muted-foreground/30">
+            ... +{hidden} linhas
           </div>
         )}
-        <div className="max-h-48 overflow-y-auto px-2.5 py-1.5">
-          {visible.map((line, i) => (
-            <div
-              key={i}
-              className="whitespace-pre leading-5 text-emerald-600/70 dark:text-emerald-400/70"
-            >
-              + {line}
-            </div>
-          ))}
-          {hidden > 0 && <div className="pt-1 text-muted-foreground/30">... +{hidden} linhas</div>}
-        </div>
       </div>
-    );
-  }
-
-  return null;
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
-// Inline tool pill — compact, always visible; expandable diff for file tools
+// Tool card — pill header with chevron for all tools; file tools expand by default
 // ---------------------------------------------------------------------------
 
-function ToolPill({ item }: { item: AgentSession["toolTimeline"][number] }) {
+function ToolCard({ item }: { item: AgentSession["toolTimeline"][number] }) {
   const isDone = item.status === "completed";
   const isPending = item.status === "pending";
   const isError = item.status === "error";
+  const isFileTool = FILE_DIFF_TOOLS.has(item.name);
+  const hasDiff = isFileTool && !!item.rawInput;
   const summary = isDone ? item.resultSummary || item.inputSummary : item.inputSummary;
-  const hasDiff = isDone && !!item.rawInput;
-  const [diffOpen, setDiffOpen] = useState(false);
+  const expandedContent = hasDiff ? "diff" : item.resultSummary || item.inputSummary || null;
+  const [open, setOpen] = useState(hasDiff);
 
   return (
-    <div className="flex flex-col">
-      <div
+    <div className="flex flex-col gap-1.5">
+      {/* Pill header */}
+      <button
+        type="button"
+        onClick={expandedContent ? () => setOpen((v) => !v) : undefined}
         className={cn(
           "inline-flex w-fit items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] transition-all",
+          expandedContent ? "cursor-pointer hover:opacity-80" : "cursor-default",
           isPending
             ? "border-blue-500/20 bg-blue-500/5"
             : isError
@@ -211,17 +236,26 @@ function ToolPill({ item }: { item: AgentSession["toolTimeline"][number] }) {
             {summary}
           </span>
         ) : null}
-        {hasDiff ? (
-          <button
-            type="button"
-            onClick={() => setDiffOpen((v) => !v)}
-            className="ml-0.5 rounded p-0.5 text-muted-foreground/30 transition hover:text-muted-foreground/60"
-          >
-            <ChevronDown className={cn("size-3 transition-transform", diffOpen && "rotate-180")} />
-          </button>
+        {expandedContent ? (
+          <ChevronDown
+            className={cn(
+              "size-3 shrink-0 text-muted-foreground/30 transition-transform",
+              open && "rotate-180"
+            )}
+          />
         ) : null}
-      </div>
-      {diffOpen && hasDiff ? <FileDiff item={item} /> : null}
+      </button>
+
+      {/* Expanded content */}
+      {open && expandedContent ? (
+        hasDiff ? (
+          <FileDiff item={item} />
+        ) : (
+          <div className="max-w-xl rounded-lg border border-border/25 bg-muted/8 px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground/60">
+            {item.resultSummary || item.inputSummary}
+          </div>
+        )
+      ) : null}
     </div>
   );
 }
@@ -436,7 +470,7 @@ export function ChatMessages({
                       ) : (
                         (() => {
                           const item = toolTimeline.find((t) => t.toolUseId === block.toolUseId);
-                          return item ? <ToolPill key={block.toolUseId} item={item} /> : null;
+                          return item ? <ToolCard key={block.toolUseId} item={item} /> : null;
                         })()
                       )
                     )}
@@ -478,7 +512,7 @@ export function ChatMessages({
                           ) : null}
                         </div>
                         {toolTimeline.map((item) => (
-                          <ToolPill key={item.toolUseId} item={item} />
+                          <ToolCard key={item.toolUseId} item={item} />
                         ))}
                       </div>
                     ) : elapsedSeconds > 0 ? (
@@ -547,7 +581,7 @@ export function ChatMessages({
                     ) : (
                       (() => {
                         const item = toolTimeline.find((t) => t.toolUseId === block.toolUseId);
-                        return item ? <ToolPill key={block.toolUseId} item={item} /> : null;
+                        return item ? <ToolCard key={block.toolUseId} item={item} /> : null;
                       })()
                     )
                   )
