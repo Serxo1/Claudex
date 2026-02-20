@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CircleAlert, Clock3, ChevronDownIcon, Copy, CopyCheck, Wrench } from "lucide-react";
+import { CircleAlert, Clock3, Copy, CopyCheck, Wrench } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
 import { SubagentTimeline } from "@/components/chat/subagent-timeline";
 import { TeamPanel } from "@/components/chat/team-panel";
@@ -36,7 +36,6 @@ import {
 } from "@/components/ai-elements/commit";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { initialsFromName, toAttachmentData } from "@/lib/chat-utils";
 import type { AgentSession } from "@/lib/chat-types";
@@ -81,16 +80,26 @@ function CopyButton({ content }: { content: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Tool timeline row — shared between running and done states
+// Inline tool pill — compact, always visible
 // ---------------------------------------------------------------------------
 
-function ToolTimelineRow({ item }: { item: AgentSession["toolTimeline"][number] }) {
+function ToolPill({ item }: { item: AgentSession["toolTimeline"][number] }) {
   const isDone = item.status === "completed";
   const isPending = item.status === "pending";
   const isError = item.status === "error";
+  const summary = isDone ? item.resultSummary || item.inputSummary : item.inputSummary;
 
   return (
-    <div className={cn("flex items-center gap-1.5 py-0.5 text-xs", isDone && "opacity-35")}>
+    <div
+      className={cn(
+        "inline-flex w-fit items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] transition-all",
+        isPending
+          ? "border-blue-500/20 bg-blue-500/5"
+          : isError
+            ? "border-destructive/20 bg-destructive/5"
+            : "border-border/25 bg-muted/10 opacity-50"
+      )}
+    >
       {isPending ? (
         <Clock3 className="size-3 shrink-0 animate-pulse text-blue-500/60" />
       ) : isError ? (
@@ -102,7 +111,7 @@ function ToolTimelineRow({ item }: { item: AgentSession["toolTimeline"][number] 
         className={cn(
           "shrink-0 font-mono",
           isDone
-            ? "text-muted-foreground/50 line-through decoration-muted-foreground/30"
+            ? "text-muted-foreground/50 line-through decoration-muted-foreground/25"
             : isError
               ? "text-destructive/70"
               : "text-muted-foreground/70"
@@ -110,18 +119,16 @@ function ToolTimelineRow({ item }: { item: AgentSession["toolTimeline"][number] 
       >
         {item.name}
       </span>
-      <span
-        className={cn(
-          "min-w-0 truncate",
-          isError
-            ? "text-destructive/50"
-            : isDone
-              ? "text-muted-foreground/30"
-              : "text-muted-foreground/40"
-        )}
-      >
-        {isPending ? item.inputSummary : item.resultSummary || item.inputSummary}
-      </span>
+      {summary ? (
+        <span
+          className={cn(
+            "max-w-72 truncate",
+            isError ? "text-destructive/50" : "text-muted-foreground/40"
+          )}
+        >
+          {summary}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -143,8 +150,6 @@ export function ChatMessages({
 }: ChatMessagesProps) {
   const recentCommits = useGitStore((s) => s.recentCommits);
   const [reasoningOpen, setReasoningOpen] = useState(false);
-  // Auto-open while running; user can collapse manually
-  const [taskOpen, setTaskOpen] = useState(session.status === "running");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -158,11 +163,6 @@ export function ChatMessages({
   const sessionCostUsd = session.sessionCostUsd ?? null;
   const isRunning = session.status === "running" || session.status === "awaiting_approval";
   const runningStartedAt = session.runningStartedAt;
-
-  // Auto-open tool timeline when session starts running
-  useEffect(() => {
-    if (isRunning) setTaskOpen(true);
-  }, [isRunning]);
 
   // Elapsed time counter — active while running
   useEffect(() => {
@@ -195,11 +195,6 @@ export function ChatMessages({
     }
     return -1;
   }, [visibleMessages]);
-
-  const pendingTools = useMemo(
-    () => toolTimeline.filter((item) => item.status === "pending"),
-    [toolTimeline]
-  );
 
   // Stable Header component — recreated only when commits change
   const Header = useMemo(() => {
@@ -302,28 +297,23 @@ export function ChatMessages({
   const itemContent = (index: number, message: SessionMessage) => {
     const isLastAssistant = index === lastAssistantIdx;
     const isThisRunning = isLastAssistant && isRunning;
+    const isAssistant = message.role === "assistant";
+
+    // User messages mark the start of a new exchange → more breathing room
+    const topPadding = index === 0 ? "pt-6" : message.role === "user" ? "pt-10" : "pt-3";
 
     return (
-      <div
-        className={cn(
-          "mx-auto w-full px-4 lg:px-8",
-          chatContainerMax,
-          index === 0 ? "pt-4" : "pt-5"
-        )}
-      >
-        <Message className="w-full max-w-full" from={message.role}>
+      <div className={cn("mx-auto w-full px-4 lg:px-8", chatContainerMax, topPadding)}>
+        <Message className={isAssistant ? "w-full max-w-full" : undefined} from={message.role}>
           <MessageContent
-            className={cn(
-              "max-w-[min(880px,100%)] rounded-2xl border px-4 py-3 shadow-sm",
-              message.role === "assistant"
-                ? "border-border/70 bg-background text-foreground"
-                : "border-border/50 bg-card text-foreground"
-            )}
+            className={
+              isAssistant ? "w-full max-w-[min(860px,100%)]" : "rounded-3xl bg-muted/70 px-4 py-3"
+            }
           >
             {/* ── RUNNING: last assistant message ── */}
             {isThisRunning ? (
               <div className="space-y-3">
-                {/* Reasoning — auto-opens when thinking starts */}
+                {/* Reasoning */}
                 {isThinking ? (
                   <Reasoning
                     isStreaming={isThinking}
@@ -341,55 +331,41 @@ export function ChatMessages({
                   <SubagentTimeline subagents={subagents} isRunning={isRunning} />
                 ) : null}
 
-                {/* Tool timeline — auto-opens, shows active tool + elapsed */}
+                {/* Partial text — shown first so agent's words appear alongside tools */}
+                {message.content.trim() ? (
+                  <MessageResponse className="text-[15px] leading-7 text-current">
+                    {message.content}
+                  </MessageResponse>
+                ) : null}
+
+                {/* Tool pills — inline, always visible */}
                 {toolTimeline.length > 0 ? (
-                  <Collapsible onOpenChange={setTaskOpen} open={taskOpen}>
-                    <CollapsibleTrigger className="group flex items-center gap-1.5 text-xs text-muted-foreground/60 transition-colors hover:text-muted-foreground">
-                      <Wrench className="size-3 shrink-0" />
-                      {pendingTools.length > 0 ? (
-                        <>
-                          <span className="shrink-0 font-mono">
-                            {pendingTools[pendingTools.length - 1]?.name}
-                          </span>
-                          <span className="max-w-56 truncate text-muted-foreground/40">
-                            {pendingTools[pendingTools.length - 1]?.inputSummary}
-                          </span>
-                        </>
-                      ) : (
-                        <span>
-                          {toolTimeline.length}{" "}
-                          {toolTimeline.length === 1 ? "ferramenta" : "ferramentas"}
-                        </span>
-                      )}
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1.5 pb-0.5">
+                      <Wrench className="size-3 text-muted-foreground/25" />
                       {elapsedSeconds > 0 ? (
-                        <span className="ml-auto font-mono text-muted-foreground/40 tabular-nums">
+                        <span className="ml-auto font-mono text-[10px] text-muted-foreground/30 tabular-nums">
                           {elapsedSeconds >= 60
                             ? `${Math.floor(elapsedSeconds / 60)}m${String(elapsedSeconds % 60).padStart(2, "0")}s`
                             : `${elapsedSeconds}s`}
                         </span>
                       ) : null}
-                      <ChevronDownIcon className="size-3 transition-transform group-data-[state=open]:rotate-180" />
-                    </CollapsibleTrigger>
-                    <CollapsibleContent className="mt-1.5">
-                      <div className="space-y-0 pl-1">
-                        {toolTimeline.map((item) => (
-                          <ToolTimelineRow key={item.toolUseId} item={item} />
-                        ))}
-                      </div>
-                    </CollapsibleContent>
-                  </Collapsible>
-                ) : null}
-
-                {/* Partial content while streaming */}
-                {message.content.trim() ? (
-                  <MessageResponse className="text-[14px] leading-6 text-current">
-                    {message.content}
-                  </MessageResponse>
+                    </div>
+                    {toolTimeline.map((item) => (
+                      <ToolPill key={item.toolUseId} item={item} />
+                    ))}
+                  </div>
+                ) : elapsedSeconds > 0 ? (
+                  <span className="font-mono text-[10px] text-muted-foreground/30 tabular-nums">
+                    {elapsedSeconds >= 60
+                      ? `${Math.floor(elapsedSeconds / 60)}m${String(elapsedSeconds % 60).padStart(2, "0")}s`
+                      : `${elapsedSeconds}s`}
+                  </span>
                 ) : null}
               </div>
             ) : (
-              /* ── COMPLETED / non-last messages ── */
-              <div className="space-y-2">
+              /* ── COMPLETED ── */
+              <div className="space-y-2.5">
                 {/* Reasoning history — collapsed, only for last assistant */}
                 {isLastAssistant && reasoningText.trim() ? (
                   <Reasoning isStreaming={false} defaultOpen={false}>
@@ -398,43 +374,7 @@ export function ChatMessages({
                   </Reasoning>
                 ) : null}
 
-                <MessageResponse className="text-[14px] leading-6 text-current">
-                  {message.content}
-                </MessageResponse>
-
-                {/* Copy + tool history row */}
-                {message.role === "assistant" && (
-                  <div className="flex items-center gap-2 pt-0.5">
-                    <CopyButton content={message.content} />
-
-                    {/* Tool history — collapsed summary for last assistant */}
-                    {isLastAssistant && toolTimeline.length > 0 ? (
-                      <Collapsible>
-                        <CollapsibleTrigger className="group flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-muted-foreground/30 transition-all hover:bg-muted/20 hover:text-muted-foreground/70">
-                          <Wrench className="size-3" />
-                          {toolTimeline.length} {toolTimeline.length === 1 ? "tool" : "tools"}
-                          <ChevronDownIcon className="size-3 transition-transform group-data-[state=open]:rotate-180" />
-                        </CollapsibleTrigger>
-                        <CollapsibleContent className="mt-1.5">
-                          <div className="space-y-0 rounded-lg border border-border/30 bg-muted/5 p-2 pl-2">
-                            {toolTimeline.map((item) => (
-                              <ToolTimelineRow key={item.toolUseId} item={item} />
-                            ))}
-                          </div>
-                        </CollapsibleContent>
-                      </Collapsible>
-                    ) : null}
-                  </div>
-                )}
-
-                {/* Subagents — for last assistant, done state */}
-                {message.role === "assistant" && isLastAssistant && subagents.length > 0 ? (
-                  <div className="mt-3 border-t border-border/30 pt-3">
-                    <SubagentTimeline isRunning={false} subagents={subagents} />
-                  </div>
-                ) : null}
-
-                {/* User attachments */}
+                {/* User attachments — inside bubble */}
                 {message.role === "user" &&
                 Array.isArray(message.attachments) &&
                 message.attachments.length > 0 ? (
@@ -459,9 +399,36 @@ export function ChatMessages({
                     })}
                   </Attachments>
                 ) : null}
+
+                <MessageResponse className="text-[15px] leading-7 text-current">
+                  {message.content}
+                </MessageResponse>
+
+                {/* Tool pills inline — visible below the response */}
+                {isAssistant && isLastAssistant && toolTimeline.length > 0 ? (
+                  <div className="flex flex-col gap-1 pt-0.5">
+                    {toolTimeline.map((item) => (
+                      <ToolPill key={item.toolUseId} item={item} />
+                    ))}
+                  </div>
+                ) : null}
               </div>
             )}
           </MessageContent>
+
+          {/* ── Assistant actions — outside bubble, appear on hover ── */}
+          {isAssistant && !isThisRunning ? (
+            <div className="flex max-w-[min(860px,100%)] items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+              <CopyButton content={message.content} />
+            </div>
+          ) : null}
+
+          {/* ── Subagents — below actions for last assistant done ── */}
+          {isAssistant && isLastAssistant && !isThisRunning && subagents.length > 0 ? (
+            <div className="max-w-[min(860px,100%)]">
+              <SubagentTimeline isRunning={false} subagents={subagents} />
+            </div>
+          ) : null}
         </Message>
       </div>
     );
