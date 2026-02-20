@@ -7,6 +7,7 @@ import type {
 } from "@/lib/chat-types";
 import { normalizeToAcp } from "@/lib/acp-events";
 import {
+  appendReasoningLine,
   deriveThreadTitle,
   normalizeErrorMessage,
   patchSession,
@@ -41,7 +42,11 @@ type Getter = () => S;
 // Main factory
 // ---------------------------------------------------------------------------
 
-export function createStreamHandler(set: Setter, get: Getter) {
+export function createStreamHandler(
+  set: Setter,
+  get: Getter,
+  onRunDone?: (threadId: string, sessionId: string) => void
+) {
   return (event: ChatStreamEvent) => {
     const acp = normalizeToAcp(event);
 
@@ -73,6 +78,24 @@ export function createStreamHandler(set: Setter, get: Getter) {
             contentBlocks: [] as ContentBlock[]
           })
         }));
+        // Record git HEAD hash at session start for session diff
+        {
+          const startThread = get().threads.find((t) => t.id === threadId);
+          const startCwd = startThread?.workspaceDirs[0];
+          if (startCwd) {
+            void window.desktop.git
+              .getHeadHash(startCwd)
+              .then((hash) => {
+                if (!hash) return;
+                set((s) => ({
+                  threads: patchSession(s.threads, threadId, sessionId, { sessionStartHash: hash })
+                }));
+              })
+              .catch(() => {
+                /* ignore */
+              });
+          }
+        }
         return;
       }
 
@@ -103,9 +126,19 @@ export function createStreamHandler(set: Setter, get: Getter) {
 
       case "run.compact": {
         set((s) => ({
-          threads: patchSession(s.threads, threadId, sessionId, (sess) => ({
-            compactCount: sess.compactCount + 1
-          }))
+          threads: patchSession(s.threads, threadId, sessionId, (sess) => {
+            const marker = {
+              id: crypto.randomUUID(),
+              role: "assistant" as const,
+              content: "",
+              compact: true as const
+            };
+            return {
+              compactCount: sess.compactCount + 1,
+              messages: [...sess.messages, marker],
+              reasoningText: appendReasoningLine(sess.reasoningText, "⚡ Compactando conversa...")
+            };
+          })
         }));
         return;
       }
@@ -302,7 +335,8 @@ export function createStreamHandler(set: Setter, get: Getter) {
               subagents: nextSubagents,
               isThinking: true,
               status: "running" as const,
-              contentBlocks: newBlocks
+              contentBlocks: newBlocks,
+              reasoningText: appendReasoningLine(sess.reasoningText, `⚙ ${acp.raw.name}...`)
             };
           })
         }));
@@ -355,9 +389,17 @@ export function createStreamHandler(set: Setter, get: Getter) {
               };
             });
 
+            const completedItem = currentItems.find((item) => item.toolUseId === acp.raw.toolUseId);
+            const toolLabel = completedItem?.name ?? "tool";
+            const shortResult = resultSummary ? resultSummary.slice(0, 60) : "";
+            const completionLine = shortResult
+              ? `✓ ${toolLabel}: ${shortResult}`
+              : `✓ ${toolLabel}`;
+
             return {
               toolTimeline: nextItems,
-              subagents: nextSubagents
+              subagents: nextSubagents,
+              reasoningText: appendReasoningLine(sess.reasoningText, completionLine)
             };
           })
         }));
@@ -423,10 +465,26 @@ export function createStreamHandler(set: Setter, get: Getter) {
                 : prevBlocks;
             }
 
+            // Freeze finalBlocks + relevant tool items into the last assistant message.
+            // Tool items are snapshotted here so the message is self-contained even after
+            // toolTimeline is reset on the next turn.
+            const frozenMessages = (() => {
+              if (streamingMsgIdx < 0 || !finalBlocks) return patchedMessages;
+              const toolIds = new Set(
+                finalBlocks.filter((b) => b.type === "tool").map((b) => b.toolUseId)
+              );
+              const contentBlockTools = sess.toolTimeline.filter((t) => toolIds.has(t.toolUseId));
+              return patchedMessages.map((msg, i) =>
+                i === streamingMsgIdx
+                  ? { ...msg, contentBlocks: finalBlocks, contentBlockTools }
+                  : msg
+              );
+            })();
+
             const prevCost = sess.accumulatedCostUsd ?? 0;
             const addCost = acp.raw.sessionCostUsd ?? 0;
             return {
-              messages: patchedMessages,
+              messages: frozenMessages,
               status: "done" as const,
               contentBlocks: finalBlocks,
               requestId: undefined,
@@ -462,10 +520,12 @@ export function createStreamHandler(set: Setter, get: Getter) {
         } catch {
           // Ignore notification errors
         }
+        const doneThread = get().threads.find((t) => t.sessions.some((s) => s.id === sessionId));
+        const doneWorkspaceDir = doneThread?.workspaceDirs[0];
         void Promise.all([
           useSettingsStore.getState().refreshSettings(),
-          useGitStore.getState().refreshGitSummary(),
-          useGitStore.getState().refreshRecentCommits(),
+          useGitStore.getState().refreshGitSummary(doneWorkspaceDir),
+          useGitStore.getState().refreshRecentCommits(doneWorkspaceDir),
           useWorkspaceStore.getState().refreshWorkspaceFileTree()
         ]);
         // Cleanup team files if this was an auto-resume stream
@@ -474,6 +534,28 @@ export function createStreamHandler(set: Setter, get: Getter) {
           _autoResumeTeams.delete(acp.raw.requestId);
           void window.desktop.teams.deleteTeam(autoResumeTeam);
         }
+        onRunDone?.(threadId, sessionId);
+        // Compute session changed files after session ends
+        void (async () => {
+          try {
+            const doneThreadForDiff = get().threads.find((t) => t.id === threadId);
+            const doneSessionForDiff = doneThreadForDiff?.sessions.find((s) => s.id === sessionId);
+            const diffCwd = doneThreadForDiff?.workspaceDirs[0];
+            if (!diffCwd) return;
+            const startHash = doneSessionForDiff?.sessionStartHash ?? null;
+            const fileObjs = await window.desktop.git.getChangedFiles(startHash, diffCwd);
+            const filePaths = fileObjs.map((f) => f.path);
+            if (filePaths.length > 0) {
+              set((s) => ({
+                threads: patchSession(s.threads, threadId, sessionId, {
+                  sessionChangedFiles: filePaths
+                })
+              }));
+            }
+          } catch {
+            /* ignore */
+          }
+        })();
         return;
       }
 
@@ -487,6 +569,7 @@ export function createStreamHandler(set: Setter, get: Getter) {
             pendingQuestion: null,
             isThinking: false,
             runningStartedAt: undefined,
+            queuedMessage: null,
             subagents: (sess.subagents ?? []).map((a) =>
               a.status === "running"
                 ? { ...a, status: "stopped" as const, finishedAt: Date.now() }
@@ -529,6 +612,7 @@ export function createStreamHandler(set: Setter, get: Getter) {
               pendingQuestion: null,
               isThinking: false,
               runningStartedAt: undefined,
+              queuedMessage: null,
               updatedAt: Date.now(),
               subagents: (sess.subagents ?? []).map((a) =>
                 a.status === "running"

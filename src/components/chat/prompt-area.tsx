@@ -1,4 +1,10 @@
-import { useMemo, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useRef,
+  useMemo,
+  useState,
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent
+} from "react";
 import { ListChecks } from "lucide-react";
 import {
   PromptInput,
@@ -17,7 +23,12 @@ import { ContextBanners } from "@/components/chat/context-banners";
 import { ContextUsageFooter } from "@/components/chat/context-usage-footer";
 import { PromptContextAttachments } from "@/components/chat/prompt-context-attachments";
 import { PromptFooterToolbar } from "@/components/chat/prompt-footer-toolbar";
-import { supportsMaxEffort, slashCommandNeedsTerminal, toAttachmentData } from "@/lib/chat-utils";
+import {
+  supportsEffort,
+  supportsMaxEffort,
+  slashCommandNeedsTerminal,
+  toAttachmentData
+} from "@/lib/chat-utils";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useGitStore } from "@/stores/git-store";
@@ -40,6 +51,7 @@ export type PromptAreaProps = {
   activeSession?: AgentSession | null;
   // If set, submit continues this session (--resume); if null/undefined, creates new session
   targetSessionId?: string | null;
+  workspaceDir?: string;
 };
 
 function isModelNew(releasedAt?: string): boolean {
@@ -59,10 +71,10 @@ export function PromptArea({
   chatContainerMax,
   modelOptions,
   activeSession,
-  targetSessionId
+  targetSessionId,
+  workspaceDir
 }: PromptAreaProps) {
   const settings = useSettingsStore((s) => s.settings);
-  const isBusy = useSettingsStore((s) => s.isBusy);
   const onSetModel = useSettingsStore((s) => s.onSetModel);
   const dynamicModels = useSettingsStore((s) => s.dynamicModels);
 
@@ -75,13 +87,45 @@ export function PromptArea({
 
   const slashCommands = useChatStore((s) => s.slashCommands);
   const onSubmit = useChatStore((s) => s.onSubmit);
+  const enqueueMessage = useChatStore((s) => s.enqueueMessage);
+  const cancelQueuedMessage = useChatStore((s) => s.cancelQueuedMessage);
+
+  const isBusy =
+    activeSession?.status === "running" || activeSession?.status === "awaiting_approval";
+  const queuedMessage = activeSession?.queuedMessage ?? null;
+  const activeSessionId = activeSession?.id;
 
   const contextUsage = activeSession?.contextUsage ?? null;
   const limitsWarning = activeSession?.limitsWarning ?? null;
   const accumulatedCostUsd = activeSession?.accumulatedCostUsd ?? 0;
+  const sessionCostUsd = activeSession?.sessionCostUsd ?? null;
   const lastMessages = activeSession?.messages ?? EMPTY_ARRAY;
 
   const [showTodos, setShowTodos] = useState(false);
+  const [historyIdx, setHistoryIdx] = useState(-1);
+  // Keep ref so it's accessible inside event handlers without stale closure issues
+  const historyIdxRef = useRef(-1);
+  historyIdxRef.current = historyIdx;
+
+  // Ordered list of user messages (oldest → newest) for history navigation
+  const userMessages = useMemo(
+    () => lastMessages.filter((m) => m.role === "user" && m.content.trim()),
+    [lastMessages]
+  );
+
+  function handleOpenClaudeMd() {
+    if (!workspaceDir) return;
+    void (async () => {
+      const ws = useWorkspaceStore.getState();
+      await ws.refreshWorkspaceFileTree();
+      const fresh = useWorkspaceStore.getState();
+      // Search by relativePath to avoid rootPath format mismatch on Windows
+      const match = fresh.fileMentionIndex.find((item) => item.relativePath === "CLAUDE.md");
+      if (match) {
+        void fresh.onOpenEditorFile(match.key);
+      }
+    })();
+  }
 
   const {
     filteredSlashCommands,
@@ -97,6 +141,7 @@ export function PromptArea({
   const suggestions = usePromptSuggestions(input, lastMessages, isSlashMenuOpen, isMentionMenuOpen);
 
   const currentModel = settings?.model || "";
+  const showEffort = supportsEffort(currentModel);
   const showMaxEffort = supportsMaxEffort(currentModel, dynamicModels);
   const activeModelOptions =
     dynamicModels.length > 0
@@ -146,6 +191,37 @@ export function PromptArea({
   }
 
   function onPromptInputKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    // Prompt history navigation (↑/↓) — only when menus are closed
+    if (!isMentionMenuOpen && !isSlashMenuOpen) {
+      const idx = historyIdxRef.current;
+      if (event.key === "ArrowUp" && (input.trim() === "" || idx > -1)) {
+        const nextIdx = Math.min(idx + 1, userMessages.length - 1);
+        if (nextIdx >= 0 && nextIdx < userMessages.length) {
+          event.preventDefault();
+          const msg = userMessages[userMessages.length - 1 - nextIdx];
+          setInput(msg.content);
+          historyIdxRef.current = nextIdx;
+          setHistoryIdx(nextIdx);
+          return;
+        }
+      }
+      if (event.key === "ArrowDown" && idx > -1) {
+        event.preventDefault();
+        if (idx <= 0) {
+          setInput("");
+          historyIdxRef.current = -1;
+          setHistoryIdx(-1);
+        } else {
+          const nextIdx = idx - 1;
+          const msg = userMessages[userMessages.length - 1 - nextIdx];
+          setInput(msg.content);
+          historyIdxRef.current = nextIdx;
+          setHistoryIdx(nextIdx);
+        }
+        return;
+      }
+    }
+
     if (isMentionMenuOpen) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -197,6 +273,13 @@ export function PromptArea({
     },
     event: FormEvent<HTMLFormElement>
   ) => {
+    if (isBusy && activeSessionId && message.text.trim()) {
+      // Queue the message instead of creating a new session
+      enqueueMessage(activeSessionId, message.text, contextFiles, effort);
+      useWorkspaceStore.getState().setContextFiles([]);
+      setInput("");
+      return;
+    }
     void onSubmit(message, event, effort, targetSessionId);
     setInput("");
   };
@@ -241,6 +324,55 @@ export function PromptArea({
         </Suggestions>
       ) : null}
 
+      {queuedMessage && activeSessionId ? (
+        <div className="mb-2 flex items-center gap-2 rounded-xl border border-blue-500/25 bg-blue-500/8 px-3 py-2 text-xs">
+          <svg
+            className="size-3.5 shrink-0 text-blue-500/60"
+            viewBox="0 0 16 16"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+            aria-hidden
+          >
+            <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.5" />
+            <path
+              d="M8 5v3.5l2 1.5"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
+          </svg>
+          <span className="flex-1 truncate text-blue-600 dark:text-blue-400">
+            Em fila:{" "}
+            <span className="text-foreground/70">
+              {queuedMessage.text.length > 60
+                ? `${queuedMessage.text.slice(0, 60)}…`
+                : queuedMessage.text}
+            </span>
+          </span>
+          <button
+            type="button"
+            onClick={() => cancelQueuedMessage(activeSessionId)}
+            className="shrink-0 rounded p-0.5 text-muted-foreground/50 hover:bg-foreground/10 hover:text-foreground/70"
+            title="Cancelar mensagem em fila"
+          >
+            <svg
+              className="size-3"
+              viewBox="0 0 12 12"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden
+            >
+              <path
+                d="M2 2l8 8M10 2l-8 8"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        </div>
+      ) : null}
+
       <ContextBanners
         contextPercent={contextUsage?.percent ?? 0}
         contextUsage={contextUsage}
@@ -263,7 +395,14 @@ export function PromptArea({
         <PromptInputBody>
           <PromptInputTextarea
             className="min-h-20 text-[15px] placeholder:text-muted-foreground/50"
-            onChange={(event) => setInput(event.target.value)}
+            onChange={(event) => {
+              setInput(event.target.value);
+              // Reset history navigation when user types manually
+              if (historyIdxRef.current !== -1) {
+                historyIdxRef.current = -1;
+                setHistoryIdx(-1);
+              }
+            }}
             onKeyDown={onPromptInputKeyDown}
             placeholder="Nova sessão — descreve o que queres fazer"
             rows={2}
@@ -287,10 +426,12 @@ export function PromptArea({
           onSetModel={onSetModel}
           effort={effort}
           setEffort={setEffort}
+          showEffort={showEffort}
           showMaxEffort={showMaxEffort}
           showTodos={showTodos}
           onToggleTodos={() => setShowTodos((v) => !v)}
           onAddContextFile={onAddContextFile}
+          onOpenClaudeMd={workspaceDir ? handleOpenClaudeMd : undefined}
           canSend={canSend}
           isBusy={isBusy}
           isGitBusy={isGitBusy}
@@ -302,6 +443,7 @@ export function PromptArea({
         contextUsage={contextUsage}
         limitsWarning={limitsWarning}
         accumulatedCostUsd={accumulatedCostUsd}
+        sessionCostUsd={sessionCostUsd}
         model={currentModel}
       />
 

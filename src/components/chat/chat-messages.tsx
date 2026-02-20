@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, CircleAlert, Clock3, Copy, CopyCheck, File, Wrench } from "lucide-react";
+import {
+  ChevronDown,
+  CircleAlert,
+  Clock3,
+  Copy,
+  CopyCheck,
+  File,
+  FileCode,
+  Globe,
+  Wrench
+} from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
 import { SubagentTimeline } from "@/components/chat/subagent-timeline";
 import { TeamPanel } from "@/components/chat/team-panel";
@@ -37,13 +47,48 @@ import {
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { cn } from "@/lib/utils";
-import { initialsFromName, toAttachmentData } from "@/lib/chat-utils";
+import {
+  extractFilePaths,
+  extractLocalhostUrls,
+  initialsFromName,
+  toAttachmentData
+} from "@/lib/chat-utils";
 import type { AgentSession } from "@/lib/chat-types";
 
 type SessionMessage = AgentSession["messages"][number];
 import { useGitStore } from "@/stores/git-store";
 
 const EMPTY_ARRAY: never[] = [];
+
+// ---------------------------------------------------------------------------
+// Compact separator — inline divider shown when conversation was compacted
+// ---------------------------------------------------------------------------
+
+function CompactSeparator() {
+  return (
+    <div className="mx-auto flex w-full items-center gap-3 px-4 py-2 lg:px-8">
+      <div className="h-px flex-1 bg-border/40" />
+      <div className="flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/8 px-2.5 py-1 text-[11px] text-amber-600 dark:text-amber-400/80">
+        <svg
+          className="size-3 shrink-0"
+          viewBox="0 0 16 16"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden
+        >
+          <path
+            d="M8 2v4M8 10v4M2 8h4M10 8h4"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+        Conversa compactada aqui
+      </div>
+      <div className="h-px flex-1 bg-border/40" />
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Copy button — appears on hover, resets after 2s
@@ -86,11 +131,26 @@ function CopyButton({ content }: { content: string }) {
 const FILE_DIFF_TOOLS = new Set(["Edit", "Write", "MultiEdit", "CreateFile"]);
 const MAX_DIFF_LINES = 80;
 
-function FileDiff({ item }: { item: AgentSession["toolTimeline"][number] }) {
+function toRelativePath(absPath: string, workspaceDir: string): string {
+  if (!workspaceDir) return absPath;
+  const norm = (p: string) => p.replace(/\\/g, "/");
+  const normAbs = norm(absPath);
+  const normWs = norm(workspaceDir).replace(/\/+$/, "") + "/";
+  return normAbs.startsWith(normWs) ? normAbs.slice(normWs.length) : absPath;
+}
+
+function FileDiff({
+  item,
+  workspaceDir
+}: {
+  item: AgentSession["toolTimeline"][number];
+  workspaceDir?: string;
+}) {
   const raw = item.rawInput;
   if (!raw) return null;
 
-  const filePath = typeof raw.file_path === "string" ? raw.file_path : null;
+  const rawPath = typeof raw.file_path === "string" ? raw.file_path : null;
+  const filePath = rawPath && workspaceDir ? toRelativePath(rawPath, workspaceDir) : rawPath;
   const isWrite = item.name === "Write" || item.name === "CreateFile";
   const isEdit = item.name === "Edit" || item.name === "MultiEdit";
 
@@ -181,7 +241,13 @@ function FileDiff({ item }: { item: AgentSession["toolTimeline"][number] }) {
 // Tool card — pill header with chevron for all tools; file tools expand by default
 // ---------------------------------------------------------------------------
 
-function ToolCard({ item }: { item: AgentSession["toolTimeline"][number] }) {
+function ToolCard({
+  item,
+  workspaceDir
+}: {
+  item: AgentSession["toolTimeline"][number];
+  workspaceDir?: string;
+}) {
   const isDone = item.status === "completed";
   const isPending = item.status === "pending";
   const isError = item.status === "error";
@@ -249,7 +315,7 @@ function ToolCard({ item }: { item: AgentSession["toolTimeline"][number] }) {
       {/* Expanded content */}
       {open && expandedContent ? (
         hasDiff ? (
-          <FileDiff item={item} />
+          <FileDiff item={item} workspaceDir={workspaceDir} />
         ) : (
           <div className="max-w-xl rounded-lg border border-border/25 bg-muted/8 px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground/60">
             {item.resultSummary || item.inputSummary}
@@ -268,12 +334,18 @@ export type ChatMessagesProps = {
   session: AgentSession;
   chatContainerMax: string;
   showCommits?: boolean;
+  workspaceDir?: string;
+  onOpenInPreview?: (url: string) => void;
+  onOpenFile?: (relativePath: string) => void;
 };
 
 export function ChatMessages({
   session,
   chatContainerMax,
-  showCommits = false
+  showCommits = false,
+  workspaceDir,
+  onOpenInPreview,
+  onOpenFile
 }: ChatMessagesProps) {
   const recentCommits = useGitStore((s) => s.recentCommits);
   const [reasoningOpen, setReasoningOpen] = useState(false);
@@ -286,9 +358,7 @@ export function ChatMessages({
   const subagents = session.subagents ?? EMPTY_ARRAY;
   const isThinking = session.isThinking ?? false;
   const reasoningText = session.reasoningText ?? "";
-  const compactCount = session.compactCount ?? 0;
   const permissionDenials = session.permissionDenials ?? EMPTY_ARRAY;
-  const sessionCostUsd = session.sessionCostUsd ?? null;
   const isRunning = session.status === "running" || session.status === "awaiting_approval";
   const runningStartedAt = session.runningStartedAt;
 
@@ -319,7 +389,12 @@ export function ChatMessages({
 
   const lastAssistantIdx = useMemo(() => {
     for (let i = visibleMessages.length - 1; i >= 0; i--) {
-      if (visibleMessages[i].role === "assistant") return i;
+      // Skip compact markers — they shouldn't be treated as real assistant messages
+      if (
+        visibleMessages[i].role === "assistant" &&
+        !(visibleMessages[i] as { compact?: boolean }).compact
+      )
+        return i;
     }
     return -1;
   }, [visibleMessages]);
@@ -379,19 +454,12 @@ export function ChatMessages({
 
   // Footer component — recreated when session metadata changes
   const Footer = useMemo(() => {
-    const cc = compactCount;
     const pd = permissionDenials;
-    const cost = sessionCostUsd;
     const teamNamesVal = session.teamNames;
     const cmax = chatContainerMax;
     return function FooterSection() {
       return (
         <div className={cn("mx-auto w-full px-4 pb-6 lg:px-8", cmax)}>
-          {cc > 0 ? (
-            <div className="mb-2 text-center text-xs text-muted-foreground">
-              Conversa compactada {cc > 1 ? `${cc}x` : ""}
-            </div>
-          ) : null}
           {pd.length > 0 ? (
             <div className="mb-2 rounded-lg border border-orange-500/30 bg-orange-500/10 p-3 space-y-1">
               <div className="text-xs font-semibold text-orange-600 dark:text-orange-400 uppercase tracking-wide">
@@ -409,20 +477,20 @@ export function ChatMessages({
               </div>
             </div>
           ) : null}
-          {cost != null ? (
-            <div className="mb-2 text-center text-xs text-muted-foreground">
-              Custo da sessão: ${cost.toFixed(4)} USD
-            </div>
-          ) : null}
           {teamNamesVal && teamNamesVal.length > 0 ? <TeamPanel teamNames={teamNamesVal} /> : null}
         </div>
       );
     };
-  }, [compactCount, permissionDenials, sessionCostUsd, session.teamNames, chatContainerMax]);
+  }, [permissionDenials, session.teamNames, chatContainerMax]);
 
   const virtuosoComponents = useMemo(() => ({ Header, Footer }), [Header, Footer]);
 
   const itemContent = (index: number, message: SessionMessage) => {
+    // Compact boundary marker — render as inline separator
+    if ((message as { compact?: boolean }).compact) {
+      return <CompactSeparator key={message.id} />;
+    }
+
     const isLastAssistant = index === lastAssistantIdx;
     const isThisRunning = isLastAssistant && isRunning;
     const isAssistant = message.role === "assistant";
@@ -470,7 +538,13 @@ export function ChatMessages({
                       ) : (
                         (() => {
                           const item = toolTimeline.find((t) => t.toolUseId === block.toolUseId);
-                          return item ? <ToolCard key={block.toolUseId} item={item} /> : null;
+                          return item ? (
+                            <ToolCard
+                              key={block.toolUseId}
+                              item={item}
+                              workspaceDir={workspaceDir}
+                            />
+                          ) : null;
                         })()
                       )
                     )}
@@ -512,7 +586,7 @@ export function ChatMessages({
                           ) : null}
                         </div>
                         {toolTimeline.map((item) => (
-                          <ToolCard key={item.toolUseId} item={item} />
+                          <ToolCard key={item.toolUseId} item={item} workspaceDir={workspaceDir} />
                         ))}
                       </div>
                     ) : elapsedSeconds > 0 ? (
@@ -571,17 +645,21 @@ export function ChatMessages({
                   </Attachments>
                 ) : null}
 
-                {/* ── Interleaved blocks (completed) — renders when tools were used ── */}
-                {isAssistant && contentBlocks && contentBlocks.length > 0 ? (
-                  contentBlocks.map((block, i) =>
+                {/* ── Interleaved blocks (completed) — per-message, self-contained ── */}
+                {isAssistant && message.contentBlocks && message.contentBlocks.length > 0 ? (
+                  message.contentBlocks.map((block, i) =>
                     block.type === "text" ? (
                       <MessageResponse key={i} className="text-[15px] leading-7 text-current">
                         {block.text}
                       </MessageResponse>
                     ) : (
                       (() => {
-                        const item = toolTimeline.find((t) => t.toolUseId === block.toolUseId);
-                        return item ? <ToolCard key={block.toolUseId} item={item} /> : null;
+                        // Use per-message frozen tools (survive toolTimeline reset on new turns)
+                        const msgTools = message.contentBlockTools ?? toolTimeline;
+                        const item = msgTools.find((t) => t.toolUseId === block.toolUseId);
+                        return item ? (
+                          <ToolCard key={block.toolUseId} item={item} workspaceDir={workspaceDir} />
+                        ) : null;
                       })()
                     )
                   )
@@ -591,6 +669,52 @@ export function ChatMessages({
                     {message.content}
                   </MessageResponse>
                 )}
+
+                {/* ── Localhost URL pills — only for completed assistant messages ── */}
+                {isAssistant && onOpenInPreview
+                  ? (() => {
+                      const urls = extractLocalhostUrls(message.content);
+                      if (!urls.length) return null;
+                      return (
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          {urls.map((url) => (
+                            <button
+                              key={url}
+                              type="button"
+                              onClick={() => onOpenInPreview(url)}
+                              className="inline-flex items-center gap-1 rounded-full border border-blue-500/30 bg-blue-500/8 px-2 py-0.5 text-[11px] text-blue-500 hover:bg-blue-500/15 transition-colors"
+                            >
+                              <Globe className="size-3" />
+                              {url}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()
+                  : null}
+
+                {/* ── File path chips — open in editor ── */}
+                {isAssistant && onOpenFile
+                  ? (() => {
+                      const paths = extractFilePaths(message.content);
+                      if (!paths.length) return null;
+                      return (
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          {paths.map((p) => (
+                            <button
+                              key={p}
+                              type="button"
+                              onClick={() => onOpenFile(p)}
+                              className="inline-flex items-center gap-1 rounded-full border border-border/40 bg-muted/20 px-2 py-0.5 text-[11px] text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground transition-colors font-mono"
+                            >
+                              <FileCode className="size-3 shrink-0" />
+                              {p}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()
+                  : null}
               </div>
             )}
           </MessageContent>

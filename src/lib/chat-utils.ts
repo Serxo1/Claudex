@@ -270,6 +270,10 @@ export function isOpusModel(model: string): boolean {
   return /opus/i.test(model);
 }
 
+export function supportsEffort(modelId: string): boolean {
+  return !/haiku/i.test(modelId);
+}
+
 export function supportsMaxEffort(modelId: string, dynamicModels: DynamicModel[]): boolean {
   const found = dynamicModels.find((m) => m.value === modelId);
   return found ? found.supportsMaxEffort : /opus/i.test(modelId);
@@ -277,4 +281,27 @@ export function supportsMaxEffort(modelId: string, dynamicModels: DynamicModel[]
 
 export function slashCommandNeedsTerminal(command: string): boolean {
   return TERMINAL_REQUIRED_SLASH_COMMANDS.has(command);
+}
+
+export function extractLocalhostUrls(text: string): string[] {
+  const re = /https?:\/\/(localhost|127\.0\.0\.1)(:\d+)([^\s"')>\]]*)/g;
+  return [...new Set(Array.from(text.matchAll(re), (m) => m[0]))];
+}
+
+/**
+ * Extract relative file paths from assistant text (e.g. `src/foo.ts`, `CLAUDE.md`).
+ * Skips URLs and only matches common code/config extensions.
+ */
+export function extractFilePaths(text: string): string[] {
+  // Match relative paths with common extensions; exclude http(s) URLs
+  const re =
+    /(?<![:/\\])(?:^|[\s"'`([{,])((\w[-\w]*\/)*\w[-\w]*\.(?:ts|tsx|js|jsx|cjs|mjs|json|md|py|css|scss|html|vue|svelte|go|rs|yaml|yml|toml|sh|bash|zsh|env))(?=[\s"'`)\]},]|$)/gm;
+  const results = new Set<string>();
+  for (const m of text.matchAll(re)) {
+    const path = m[1].trim();
+    // Skip if looks like a URL fragment
+    if (path.includes("://")) continue;
+    results.add(path);
+  }
+  return [...results];
 }

@@ -1,4 +1,5 @@
-import { ListChecks, Plus } from "lucide-react";
+import { FileText, ListChecks, Plus } from "lucide-react";
+import { cn } from "@/lib/utils";
 import {
   PromptInputButton,
   PromptInputFooter,
@@ -19,10 +20,12 @@ export type PromptFooterToolbarProps = {
   onSetModel: (value: string) => void | Promise<void>;
   effort: string;
   setEffort: (value: string) => void;
+  showEffort: boolean;
   showMaxEffort: boolean;
   showTodos: boolean;
   onToggleTodos: () => void;
   onAddContextFile: () => void | Promise<void>;
+  onOpenClaudeMd?: () => void;
   canSend: boolean;
   isBusy: boolean;
   isGitBusy: boolean;
@@ -35,12 +38,13 @@ export function PromptFooterToolbar({
   onSetModel,
   effort,
   setEffort,
+  showEffort,
   showMaxEffort,
   showTodos,
   onToggleTodos,
   onAddContextFile,
+  onOpenClaudeMd,
   canSend,
-  isBusy,
   isGitBusy,
   isModelNew
 }: PromptFooterToolbarProps) {
@@ -62,6 +66,16 @@ export function PromptFooterToolbar({
         >
           <ListChecks className="size-4" />
         </PromptInputButton>
+
+        {onOpenClaudeMd ? (
+          <PromptInputButton
+            className="text-muted-foreground hover:text-foreground"
+            onClick={onOpenClaudeMd}
+            tooltip="Editar CLAUDE.md"
+          >
+            <FileText className="size-4" />
+          </PromptInputButton>
+        ) : null}
 
         <PromptInputSelect
           onValueChange={(value) => void onSetModel(value)}
@@ -86,24 +100,39 @@ export function PromptFooterToolbar({
           </PromptInputSelectContent>
         </PromptInputSelect>
 
-        <PromptInputSelect onValueChange={setEffort} value={effort}>
-          <PromptInputSelectTrigger className="h-8 min-w-32 rounded-md border border-border/60 bg-muted/30 px-2 py-1 text-xs">
-            <PromptInputSelectValue />
-          </PromptInputSelectTrigger>
-          <PromptInputSelectContent>
-            <PromptInputSelectItem value="low">Low effort</PromptInputSelectItem>
-            <PromptInputSelectItem value="medium">Medium effort</PromptInputSelectItem>
-            <PromptInputSelectItem value="high">High effort</PromptInputSelectItem>
-            {showMaxEffort ? (
-              <PromptInputSelectItem value="max">Max effort</PromptInputSelectItem>
-            ) : null}
-          </PromptInputSelectContent>
-        </PromptInputSelect>
+        {showEffort ? (
+          <div className="inline-flex items-center gap-px rounded-md border border-border/60 bg-muted/30 p-0.5">
+            {(showMaxEffort
+              ? (["low", "medium", "high", "max"] as const)
+              : (["low", "medium", "high"] as const)
+            ).map((level) => (
+              <button
+                key={level}
+                type="button"
+                onClick={() => setEffort(level)}
+                className={cn(
+                  "h-6 rounded px-2 text-[11px] font-medium capitalize transition-colors",
+                  effort === level
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {level === "medium"
+                  ? "Med"
+                  : level === "max"
+                    ? "Max"
+                    : level === "low"
+                      ? "Lo"
+                      : "Hi"}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </PromptInputTools>
 
       <PromptInputSubmit
         className="rounded-full bg-foreground text-background hover:bg-foreground/90"
-        disabled={!canSend || isBusy || isGitBusy}
+        disabled={!canSend || isGitBusy}
         status="ready"
       />
     </PromptInputFooter>

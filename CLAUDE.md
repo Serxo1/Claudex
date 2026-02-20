@@ -11,7 +11,8 @@ Aplicação desktop **"Claudex"** — wrapper visual para o **Claude Code CLI** 
 ```bash
 npm install            # instalar dependências
 npm run dev            # renderer (Vite :5173) + Electron em paralelo
-npm run dist:win       # build de produção → MSI installer Windows
+npm run dist:win       # build de produção → NSIS + MSI installer Windows
+npm run dist:mac       # build de produção → DMG macOS (arm64 + x64)
 npm run typecheck      # tsc -b (sem emitir ficheiros)
 npm start              # executar app já empacotado
 
@@ -22,6 +23,34 @@ npm run format         # Prettier em src/ e electron/
 ```
 
 > **Pre-commit hook**: `lint-staged` corre Prettier + ESLint em `src/**/*.{ts,tsx}` e Prettier em `electron/**/*.cjs`.
+
+## Fluxo Git & Releases
+
+**Repo**: `https://github.com/Serxo1/Claudex` · branch principal: `main`
+
+### Commit e push normal
+
+```bash
+npm run typecheck          # verificar antes de commitar
+git add <ficheiros>
+git commit -m "tipo: descrição"
+git push origin <branch>
+```
+
+### Criar um release público (CI faz build automático)
+
+```bash
+# 1. Actualizar version em package.json (ex: "0.1.0" → "0.2.0")
+# 2. Commit + tag + push
+git add package.json
+git commit -m "chore: release v0.2.0"
+git tag v0.2.0
+git push origin main --tags
+```
+
+O GitHub Actions (`.github/workflows/release.yml`) faz build Windows + macOS e publica o GitHub Release automaticamente. O `electron-updater` nos clientes detecta o novo release via `GH_TOKEN` (secret configurado no repo).
+
+> **Nunca fazer force-push em `main`** — os instaladores publicados referenciam os commits por hash.
 
 ## Arquitetura
 
@@ -48,11 +77,12 @@ App (100vh)
 │  └─ Settings panel (colapsável)
 └─ Main (flex-1)
    ├─ HeaderBar
-   ├─ Content:
-   │  ├─ Left Panel (46% quando showRightPanel)
+   ├─ Content
+   │  ├─ Left Panel (25–75% quando showRightPanel, arrastável)
    │  │  └─ SessionStack → chat messages (virtualizado com react-virtuoso)
-   │  └─ Right Panel (54%) — visível quando preview ativo ou editor tabs abertos
-   │     ├─ WebPreview (Electron webview real, com barra URL + navegação)
+   │  ├─ Drag handle (1px, cursor-col-resize) — posição persiste em localStorage `split-pct`
+   │  └─ Right Panel (flex-1) — visível quando preview ativo ou editor tabs abertos
+   │     ├─ WebPreview (Electron webview real, console real, loading bar, screenshot)
    │     └─ Monaco Editor (tabs, auto-save)
    └─ Terminal (painel inferior, toggleável, PTY via node-pty)
 ```
@@ -71,13 +101,13 @@ App (100vh)
 - **`src/components/chat/team-panel.tsx`** — UI completa de team agents: cards por agente, task board, aprovação de permissões, mensagens directas, botão manual resume
 - **`src/components/chat/store-page.tsx`** — marketplace: filtros por categoria, instalar/desinstalar plugins, search, badges
 - **`src/components/chat/prompt-area.tsx`** — área de input com suporte a attachments, context files, imagens coladas
-- **`src/components/ai-elements/web-preview.tsx`** — webview browser com histórico e console
+- **`src/components/ai-elements/web-preview.tsx`** — webview browser; `WebPreviewContext` expõe `url`, `consoleOpen`, `logs: ConsoleLine[]`, `isLoading`, `screenshotFn`. Console real via `console-message` event; loading bar animada; `WebPreviewScreenshotButton` captura webview e passa dataUrl para `onCapture`.
 - **`src/components/ui/`** — shadcn/ui (style "new-york", Tailwind v4)
 - **`src/components/ai-elements/`** — 65+ componentes de IA: artifacts, code-block (Shiki), reasoning, subagent-timeline, tool, etc.
 
 ### State Management (Zustand)
 
-- **`src/stores/chat-store.ts`** — threads, sessions, streaming, aprovações, `teamNames` por sessão, auto-resume de teams, `manualResumeForTeam()`
+- **`src/stores/chat-store.ts`** — threads, sessions, streaming, aprovações, `teamNames` por sessão, auto-resume de teams, `manualResumeForTeam()`, `setThreadPreviewUrl()`
 - **`src/stores/settings-store.ts`** — settings, modelos dinâmicos, auth, `claudeCodeReady`, `acpStatus`, `ibmAcpStatus`, `setAcpConfig()`, `refreshAcpStatus()`
 - **`src/stores/team-store.ts`** — snapshots activos; `sessionTeams: Set<string>` (guard contra snapshots de sessões antigas)
 - **`src/stores/workspace-store.ts`** — file tree, editor tabs (Monaco), IDEs
@@ -87,7 +117,7 @@ App (100vh)
 ### Hooks
 
 - **`src/hooks/use-terminal.ts`** — sessão PTY + XTerm.js
-- **`src/hooks/use-preview.ts`** — controlo do webview (URL, navegação, histórico)
+- **`src/hooks/use-preview.ts`** — controlo do webview (URL, navegação, histórico); thread-aware: `usePreview(threadId, initialUrl, onUrlSave)` — reset de estado ao mudar de thread, persiste URL por thread via callback `onUrlSave`
 - **`src/hooks/use-workspace.ts`**, **`use-git.ts`**, **`use-settings.ts`** — helpers de domínio
 
 ### IPC (`window.desktop.*`)
@@ -153,9 +183,11 @@ Coordenação via ficheiros em `~/.claude/`:
 
 ## Patterns Importantes
 
-### `sanitizeSession` — Persistência em localStorage
+### Persistência em localStorage
 
-`sanitizeSession` em `chat-store.ts` é o único local onde campos de `AgentSession` são restaurados do localStorage. **Ao adicionar um novo campo persistido a `AgentSession`, é obrigatório adicioná-lo aqui.** Campos voláteis são sempre limpos no load.
+**`AgentSession`** — `sanitizeSession` em `chat-persistence.ts` é o único local onde campos são restaurados do localStorage. **Ao adicionar um novo campo persistido a `AgentSession`, é obrigatório adicioná-lo aqui.** Campos voláteis são sempre limpos no load.
+
+**`Thread`** — campos adicionados ao tipo `Thread` (ex: `previewUrl?: string`) são persistidos automaticamente via `persistThreads()` (JSON.stringify). Não precisam de sanitização; são opcionais por definição.
 
 ### Zustand — Nunca chamar `set()` dentro de outro `set()`
 
@@ -168,6 +200,10 @@ Causa overwrite silencioso. Side-effects (`set()`, `setTimeout`) devem estar **f
 ### Terminal PTY
 
 Prioriza `node-pty`; fallback para pipes stdio. Shell: `$SHELL` → `/bin/zsh` → `/bin/bash`.
+
+### Auto-Preview de URLs localhost
+
+`extractLocalhostUrls(text)` em `chat-utils.ts` extrai URLs `localhost`/`127.0.0.1` de texto. `chat-shell.tsx` monitoriza o último conteúdo `assistant` e navega automaticamente para o primeiro URL novo, fazendo `setActivePage("preview")`. Pills inline clicáveis são renderizadas em mensagens completadas via `onOpenInPreview` prop (`ChatMessages` → `SessionStack` → `ChatShell`).
 
 ### Git Operations
 

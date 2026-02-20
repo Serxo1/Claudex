@@ -11,7 +11,7 @@ const AUTH_MODES = {
 
 const DEFAULT_SETTINGS = {
   authMode: AUTH_MODES.CLAUDE_CLI,
-  model: "claude-sonnet-4-5",
+  model: "claude-sonnet-4-6",
   encryptedApiKey: "",
   claudeCliSessionId: "",
   preferredIde: "cursor",

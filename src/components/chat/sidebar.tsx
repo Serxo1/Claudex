@@ -310,6 +310,15 @@ export function Sidebar({
                       )}
                       onClick={() => {
                         setActiveThreadId(thread.id);
+                        // When searching, navigate to first session that matches the query
+                        if (q) {
+                          const matchingSession = thread.sessions.find(
+                            (s) =>
+                              s.title.toLowerCase().includes(q) ||
+                              s.messages.some((m) => m.content.toLowerCase().includes(q))
+                          );
+                          if (matchingSession) setActiveSessionId(matchingSession.id);
+                        }
                         if (isSearching) closeSearch();
                       }}
                       type="button"

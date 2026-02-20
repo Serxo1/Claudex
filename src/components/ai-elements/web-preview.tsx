@@ -7,7 +7,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { ChevronDownIcon } from "lucide-react";
+import { Camera, ChevronDownIcon, X } from "lucide-react";
 import {
   createContext,
   useCallback,
@@ -18,11 +18,32 @@ import {
   useRef
 } from "react";
 
+// ---------------------------------------------------------------------------
+// Console line type
+// ---------------------------------------------------------------------------
+
+export type ConsoleLine = {
+  level: "log" | "warn" | "error";
+  message: string;
+  timestamp: number;
+};
+
+// ---------------------------------------------------------------------------
+// Context
+// ---------------------------------------------------------------------------
+
 export interface WebPreviewContextValue {
   url: string;
   setUrl: (url: string) => void;
   consoleOpen: boolean;
   setConsoleOpen: (open: boolean) => void;
+  logs: ConsoleLine[];
+  addLog: (log: ConsoleLine) => void;
+  clearLogs: () => void;
+  isLoading: boolean;
+  setIsLoading: (value: boolean) => void;
+  screenshotFn: () => Promise<string | null>;
+  setScreenshotFn: (fn: (() => Promise<string | null>) | null) => void;
 }
 
 const WebPreviewContext = createContext<WebPreviewContextValue | null>(null);
@@ -49,6 +70,11 @@ export const WebPreview = ({
 }: WebPreviewProps) => {
   const [url, setUrl] = useState(defaultUrl);
   const [consoleOpen, setConsoleOpen] = useState(false);
+  const [logs, setLogs] = useState<ConsoleLine[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Screenshot fn stored in a ref to avoid React function-in-state issues
+  const screenshotFnRef = useRef<(() => Promise<string | null>) | null>(null);
 
   const handleUrlChange = useCallback(
     (newUrl: string) => {
@@ -58,14 +84,45 @@ export const WebPreview = ({
     [onUrlChange]
   );
 
+  const addLog = useCallback((log: ConsoleLine) => {
+    setLogs((prev) => [...prev, log]);
+  }, []);
+
+  const clearLogs = useCallback(() => setLogs([]), []);
+
+  const screenshotFn = useCallback(async () => {
+    return screenshotFnRef.current ? await screenshotFnRef.current() : null;
+  }, []);
+
+  const setScreenshotFn = useCallback((fn: (() => Promise<string | null>) | null) => {
+    screenshotFnRef.current = fn;
+  }, []);
+
   const contextValue = useMemo<WebPreviewContextValue>(
     () => ({
       consoleOpen,
       setConsoleOpen,
       setUrl: handleUrlChange,
-      url
+      url,
+      logs,
+      addLog,
+      clearLogs,
+      isLoading,
+      setIsLoading,
+      screenshotFn,
+      setScreenshotFn
     }),
-    [consoleOpen, handleUrlChange, url]
+    [
+      consoleOpen,
+      handleUrlChange,
+      url,
+      logs,
+      addLog,
+      clearLogs,
+      isLoading,
+      screenshotFn,
+      setScreenshotFn
+    ]
   );
 
   return (
@@ -79,6 +136,10 @@ export const WebPreview = ({
     </WebPreviewContext.Provider>
   );
 };
+
+// ---------------------------------------------------------------------------
+// Navigation bar
+// ---------------------------------------------------------------------------
 
 export type WebPreviewNavigationProps = ComponentProps<"div">;
 
@@ -124,6 +185,10 @@ export const WebPreviewNavigationButton = ({
   </TooltipProvider>
 );
 
+// ---------------------------------------------------------------------------
+// URL input
+// ---------------------------------------------------------------------------
+
 export type WebPreviewUrlProps = ComponentProps<typeof Input>;
 
 export const WebPreviewUrl = ({ value, onChange, onKeyDown, ...props }: WebPreviewUrlProps) => {
@@ -166,12 +231,41 @@ export const WebPreviewUrl = ({ value, onChange, onKeyDown, ...props }: WebPrevi
   );
 };
 
-export type WebPreviewBodyProps = ComponentProps<"iframe"> & {
-  loading?: ReactNode;
+// ---------------------------------------------------------------------------
+// Loading bar
+// ---------------------------------------------------------------------------
+
+export const WebPreviewLoadingBar = () => {
+  const { isLoading } = useWebPreview();
+  return (
+    <div
+      className={cn(
+        "pointer-events-none absolute top-0 left-0 h-0.5 w-full overflow-hidden transition-opacity duration-300",
+        isLoading ? "opacity-100" : "opacity-0"
+      )}
+    >
+      <div className="h-full w-1/3 animate-[shimmer_1s_ease-in-out_infinite] bg-primary/70" />
+    </div>
+  );
 };
 
-export const WebPreviewBody = ({ className, loading, src, ...props }: WebPreviewBodyProps) => {
-  const { url, setUrl } = useWebPreview();
+// ---------------------------------------------------------------------------
+// Body (webview / iframe)
+// ---------------------------------------------------------------------------
+
+export type WebPreviewBodyProps = ComponentProps<"iframe"> & {
+  loading?: ReactNode;
+  onScreenshotCaptured?: (dataUrl: string) => void;
+};
+
+export const WebPreviewBody = ({
+  className,
+  loading,
+  src,
+  onScreenshotCaptured: _onScreenshotCaptured,
+  ...props
+}: WebPreviewBodyProps) => {
+  const { url, setUrl, addLog, clearLogs, setIsLoading, setScreenshotFn } = useWebPreview();
   const webviewRef = useRef<any>(null);
 
   useEffect(() => {
@@ -179,25 +273,51 @@ export const WebPreviewBody = ({ className, loading, src, ...props }: WebPreview
     if (!webview) return;
 
     const handleNavigate = (event: any) => {
-      if (event.url && event.url !== url) {
-        setUrl(event.url);
-      }
+      if (event.url && event.url !== url) setUrl(event.url);
+    };
+    const handleNewNavigate = () => clearLogs();
+    const handleStartLoading = () => setIsLoading(true);
+    const handleStopLoading = () => setIsLoading(false);
+    const handleConsoleMessage = (event: any) => {
+      const levelMap: Record<number, "log" | "warn" | "error"> = {
+        0: "log",
+        1: "warn",
+        2: "error",
+        3: "log"
+      };
+      const level = levelMap[event.level as number] ?? "log";
+      addLog({ level, message: event.message as string, timestamp: Date.now() });
     };
 
     webview.addEventListener("did-navigate", handleNavigate);
+    webview.addEventListener("did-navigate", handleNewNavigate);
     webview.addEventListener("did-navigate-in-page", handleNavigate);
+    webview.addEventListener("did-start-loading", handleStartLoading);
+    webview.addEventListener("did-stop-loading", handleStopLoading);
+    webview.addEventListener("console-message", handleConsoleMessage);
+
+    setScreenshotFn(async () => {
+      const img = await (webviewRef.current as any)?.capturePage?.();
+      return img ? (img.toDataURL() as string) : null;
+    });
 
     return () => {
       webview.removeEventListener("did-navigate", handleNavigate);
+      webview.removeEventListener("did-navigate", handleNewNavigate);
       webview.removeEventListener("did-navigate-in-page", handleNavigate);
+      webview.removeEventListener("did-start-loading", handleStartLoading);
+      webview.removeEventListener("did-stop-loading", handleStopLoading);
+      webview.removeEventListener("console-message", handleConsoleMessage);
+      setScreenshotFn(null);
     };
-  }, [url, setUrl]);
+  }, [url, setUrl, addLog, clearLogs, setIsLoading, setScreenshotFn]);
 
   const isElectron =
     typeof navigator !== "undefined" && navigator.userAgent.toLowerCase().includes("electron");
 
   return (
-    <div className="flex-1 overflow-hidden">
+    <div className="relative flex-1 overflow-hidden">
+      <WebPreviewLoadingBar />
       {isElectron ? (
         <webview
           allowpopups={true}
@@ -222,21 +342,41 @@ export const WebPreviewBody = ({ className, loading, src, ...props }: WebPreview
   );
 };
 
-export type WebPreviewConsoleProps = ComponentProps<"div"> & {
-  logs?: {
-    level: "log" | "warn" | "error";
-    message: string;
-    timestamp: Date;
-  }[];
+// ---------------------------------------------------------------------------
+// Screenshot button (reads screenshotFn from context)
+// ---------------------------------------------------------------------------
+
+export type WebPreviewScreenshotButtonProps = {
+  onCapture?: (dataUrl: string) => void;
+  tooltip?: string;
 };
 
-export const WebPreviewConsole = ({
-  className,
-  logs = [],
-  children,
-  ...props
-}: WebPreviewConsoleProps) => {
-  const { consoleOpen, setConsoleOpen } = useWebPreview();
+export const WebPreviewScreenshotButton = ({
+  onCapture,
+  tooltip = "Enviar screenshot para o Claude"
+}: WebPreviewScreenshotButtonProps) => {
+  const { screenshotFn } = useWebPreview();
+  return (
+    <WebPreviewNavigationButton
+      onClick={async () => {
+        const dataUrl = await screenshotFn();
+        if (dataUrl) onCapture?.(dataUrl);
+      }}
+      tooltip={tooltip}
+    >
+      <Camera className="size-4" />
+    </WebPreviewNavigationButton>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Console
+// ---------------------------------------------------------------------------
+
+export type WebPreviewConsoleProps = ComponentProps<"div">;
+
+export const WebPreviewConsole = ({ className, children, ...props }: WebPreviewConsoleProps) => {
+  const { consoleOpen, setConsoleOpen, logs, clearLogs } = useWebPreview();
 
   return (
     <Collapsible
@@ -251,9 +391,27 @@ export const WebPreviewConsole = ({
           variant="ghost"
         >
           Console
-          <ChevronDownIcon
-            className={cn("h-4 w-4 transition-transform duration-200", consoleOpen && "rotate-180")}
-          />
+          <span className="ml-auto flex items-center gap-1.5">
+            {logs.length > 0 ? (
+              <span
+                role="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  clearLogs();
+                }}
+                className="flex size-4 items-center justify-center rounded hover:bg-muted text-muted-foreground/60 hover:text-foreground"
+                title="Clear console"
+              >
+                <X className="size-3" />
+              </span>
+            ) : null}
+            <ChevronDownIcon
+              className={cn(
+                "h-4 w-4 transition-transform duration-200",
+                consoleOpen && "rotate-180"
+              )}
+            />
+          </span>
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent
@@ -274,9 +432,11 @@ export const WebPreviewConsole = ({
                   log.level === "warn" && "text-yellow-600",
                   log.level === "log" && "text-foreground"
                 )}
-                key={`${log.timestamp.getTime()}-${index}`}
+                key={`${log.timestamp}-${index}`}
               >
-                <span className="text-muted-foreground">{log.timestamp.toLocaleTimeString()}</span>{" "}
+                <span className="text-muted-foreground">
+                  {new Date(log.timestamp).toLocaleTimeString()}
+                </span>{" "}
                 {log.message}
               </div>
             ))

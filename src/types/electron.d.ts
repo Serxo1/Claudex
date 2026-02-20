@@ -7,6 +7,7 @@ import type {
   ChatStreamStartResult,
   ChatSendResult,
   CliCheckResult,
+  GitChangedFile,
   GitCommitResult,
   GitCommitEntry,
   GitPrResult,
@@ -83,16 +84,22 @@ declare global {
         ) => Promise<{ ok: boolean; ideId: string }>;
       };
       git: {
-        getSummary: () => Promise<GitSummary>;
-        getRecentCommits: (limit?: number) => Promise<GitCommitEntry[]>;
-        initRepo: () => Promise<GitSummary>;
-        checkoutBranch: (branchName: string) => Promise<GitSummary>;
-        commit: (message: string) => Promise<GitCommitResult>;
+        getSummary: (cwd?: string) => Promise<GitSummary>;
+        getRecentCommits: (limit?: number, cwd?: string) => Promise<GitCommitEntry[]>;
+        initRepo: (cwd?: string) => Promise<GitSummary>;
+        checkoutBranch: (branchName: string, cwd?: string) => Promise<GitSummary>;
+        commit: (message: string, cwd?: string) => Promise<GitCommitResult>;
+        push: (cwd?: string) => Promise<{ ok: boolean; output: string }>;
+        pull: (cwd?: string) => Promise<{ ok: boolean; output: string; summary: GitSummary }>;
+        fetch: (cwd?: string) => Promise<{ ok: boolean; output: string }>;
         createPr: (payload?: {
           title?: string;
           body?: string;
           base?: string;
+          cwd?: string;
         }) => Promise<GitPrResult>;
+        getHeadHash: (cwd?: string) => Promise<string | null>;
+        getChangedFiles: (since?: string | null, cwd?: string) => Promise<GitChangedFile[]>;
       };
       terminal: {
         createSession: (payload?: {
@@ -124,6 +131,12 @@ declare global {
       };
       app: {
         notify: (payload: { title: string; body?: string }) => Promise<{ ok: boolean }>;
+        checkForUpdates: () => Promise<{ ok: boolean; error?: string }>;
+        installUpdate: () => Promise<{ ok: boolean }>;
+        onUpdateAvailable: (
+          callback: (payload: { version: string; releaseNotes: string | null }) => void
+        ) => () => void;
+        onUpdateDownloaded: (callback: (payload: { version: string }) => void) => () => void;
       };
       mcp: {
         getServers: () => Promise<

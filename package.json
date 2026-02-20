@@ -1,9 +1,9 @@
 {
-  "name": "claude-electron-chat",
+  "name": "claudex",
   "version": "0.1.0",
   "private": true,
-  "description": "Electron + React desktop chat app with API key or Claude CLI auth mode.",
-  "author": "Claude Desktop Chat",
+  "description": "Claudex — visual desktop wrapper for Claude Code CLI",
+  "author": "Claudex",
   "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
@@ -12,6 +12,7 @@
     "dev:electron": "wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
     "build:renderer": "tsc -b && vite build",
     "dist:win": "npm run build:renderer && electron-builder --win",
+    "dist:mac": "npm run build:renderer && electron-builder --mac",
     "build": "npm run dist:win",
     "preview": "vite preview",
     "start": "electron .",
@@ -26,7 +27,7 @@
   },
   "dependencies": {
     "@ai-sdk/react": "^2.0.57",
-    "@anthropic-ai/claude-agent-sdk": "^0.2.45",
+    "@anthropic-ai/claude-agent-sdk": "0.2.45",
     "@monaco-editor/react": "^4.7.0",
     "@radix-ui/react-use-controllable-state": "^1.2.2",
     "@rive-app/react-webgl2": "^4.27.0",
@@ -77,6 +78,7 @@
     "cross-env": "^10.0.0",
     "electron": "^37.2.6",
     "electron-builder": "^26.8.1",
+    "electron-updater": "^6.8.3",
     "eslint": "^10.0.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react-hooks": "^7.0.1",
@@ -102,8 +104,8 @@
     ]
   },
   "build": {
-    "appId": "com.claude.electron.chat",
-    "productName": "Claude Desktop Chat",
+    "appId": "io.claudex.app",
+    "productName": "Claudex",
     "icon": "public/logo.png",
     "directories": {
       "output": "dist_electron"
@@ -115,10 +117,62 @@
     ],
     "asarUnpack": [
       "node_modules/node-pty/**/*",
-      "node_modules/@anthropic-ai/claude-agent-sdk/**/*"
+      "node_modules/@anthropic-ai/claude-agent-sdk/**/*",
+      "node_modules/electron-updater/**/*"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Serxo1",
+        "repo": "Claudex"
+      }
     ],
     "win": {
-      "target": "msi"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "msi",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signingHashAlgorithms": [
+        "sha256"
+      ],
+      "certificateFile": "${env.WIN_CERT_PATH}",
+      "certificatePassword": "${env.WIN_CERT_PASSWORD}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "sign": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "public/logo.png",
+      "uninstallerIcon": "public/logo.png",
+      "deleteAppDataOnUninstall": false
     },
     "npmRebuild": false
   }
