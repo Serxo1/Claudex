@@ -110,16 +110,18 @@ function ToolTimelineRow({ item }: { item: AgentSession["toolTimeline"][number] 
       >
         {item.name}
       </span>
-      {!isDone && (
-        <span
-          className={cn(
-            "min-w-0 truncate",
-            isError ? "text-destructive/50" : "text-muted-foreground/40"
-          )}
-        >
-          {isPending ? item.inputSummary : item.resultSummary || item.inputSummary}
-        </span>
-      )}
+      <span
+        className={cn(
+          "min-w-0 truncate",
+          isError
+            ? "text-destructive/50"
+            : isDone
+              ? "text-muted-foreground/30"
+              : "text-muted-foreground/40"
+        )}
+      >
+        {isPending ? item.inputSummary : item.resultSummary || item.inputSummary}
+      </span>
     </div>
   );
 }
