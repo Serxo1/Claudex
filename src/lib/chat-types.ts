@@ -324,6 +324,9 @@ export type ThreadContextUsage = {
   cacheCreationInputTokens: number;
 };
 
+/** Ordered interleaved content block — text or tool call */
+export type ContentBlock = { type: "text"; text: string } | { type: "tool"; toolUseId: string };
+
 export type PendingApproval = {
   approvalId: string;
   toolName: string;
@@ -371,6 +374,8 @@ export type AgentSession = {
   permissionDenials: string[];
   /** Team names created in this session via TeamCreate tool */
   teamNames?: string[];
+  /** Interleaved content blocks: text chunks and tool calls in order of occurrence */
+  contentBlocks?: ContentBlock[];
   createdAt: number;
   updatedAt: number;
 };

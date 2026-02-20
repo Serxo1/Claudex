@@ -95,6 +95,20 @@ export function sanitizeSession(raw: Record<string, unknown>): AgentSession | nu
     teamNames: Array.isArray(raw.teamNames)
       ? (raw.teamNames as string[]).filter((v) => typeof v === "string")
       : undefined,
+    contentBlocks: Array.isArray(raw.contentBlocks)
+      ? (raw.contentBlocks as Array<{ type: string; text?: string; toolUseId?: string }>)
+          .filter(
+            (b) =>
+              b &&
+              ((b.type === "text" && typeof b.text === "string") ||
+                (b.type === "tool" && typeof b.toolUseId === "string"))
+          )
+          .map((b) =>
+            b.type === "text"
+              ? ({ type: "text", text: b.text! } as const)
+              : ({ type: "tool", toolUseId: b.toolUseId! } as const)
+          )
+      : undefined,
     createdAt: typeof raw.createdAt === "number" ? (raw.createdAt as number) : Date.now(),
     updatedAt: typeof raw.updatedAt === "number" ? (raw.updatedAt as number) : Date.now()
   };

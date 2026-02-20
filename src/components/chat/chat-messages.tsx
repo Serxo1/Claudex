@@ -155,6 +155,7 @@ export function ChatMessages({
 
   const messages = session.messages;
   const toolTimeline = session.toolTimeline ?? EMPTY_ARRAY;
+  const contentBlocks = session.contentBlocks;
   const subagents = session.subagents ?? EMPTY_ARRAY;
   const isThinking = session.isThinking ?? false;
   const reasoningText = session.reasoningText ?? "";
@@ -331,31 +332,74 @@ export function ChatMessages({
                   <SubagentTimeline subagents={subagents} isRunning={isRunning} />
                 ) : null}
 
-                {/* Partial text — shown first so agent's words appear alongside tools */}
-                {message.content.trim() ? (
-                  <MessageResponse className="text-[15px] leading-7 text-current">
-                    {message.content}
-                  </MessageResponse>
-                ) : null}
+                {/* ── Interleaved: contentBlocks available → render in order ── */}
+                {contentBlocks && contentBlocks.length > 0 ? (
+                  <>
+                    {contentBlocks.map((block, i) =>
+                      block.type === "text" ? (
+                        <MessageResponse key={i} className="text-[15px] leading-7 text-current">
+                          {block.text}
+                        </MessageResponse>
+                      ) : (
+                        (() => {
+                          const item = toolTimeline.find((t) => t.toolUseId === block.toolUseId);
+                          return item ? <ToolPill key={block.toolUseId} item={item} /> : null;
+                        })()
+                      )
+                    )}
+                    {/* Text streaming after the last committed block */}
+                    {(() => {
+                      const textCommitted = contentBlocks
+                        .filter((b) => b.type === "text")
+                        .reduce(
+                          (acc, b) => acc + (b as { type: "text"; text: string }).text.length,
+                          0
+                        );
+                      const tail = message.content.slice(textCommitted);
+                      return tail ? (
+                        <MessageResponse className="text-[15px] leading-7 text-current">
+                          {tail}
+                        </MessageResponse>
+                      ) : null;
+                    })()}
+                  </>
+                ) : (
+                  /* ── Fallback: no contentBlocks yet → old layout ── */
+                  <>
+                    {message.content.trim() ? (
+                      <MessageResponse className="text-[15px] leading-7 text-current">
+                        {message.content}
+                      </MessageResponse>
+                    ) : null}
 
-                {/* Tool pills — inline, always visible */}
-                {toolTimeline.length > 0 ? (
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-1.5 pb-0.5">
-                      <Wrench className="size-3 text-muted-foreground/25" />
-                      {elapsedSeconds > 0 ? (
-                        <span className="ml-auto font-mono text-[10px] text-muted-foreground/30 tabular-nums">
-                          {elapsedSeconds >= 60
-                            ? `${Math.floor(elapsedSeconds / 60)}m${String(elapsedSeconds % 60).padStart(2, "0")}s`
-                            : `${elapsedSeconds}s`}
-                        </span>
-                      ) : null}
-                    </div>
-                    {toolTimeline.map((item) => (
-                      <ToolPill key={item.toolUseId} item={item} />
-                    ))}
-                  </div>
-                ) : elapsedSeconds > 0 ? (
+                    {toolTimeline.length > 0 ? (
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1.5 pb-0.5">
+                          <Wrench className="size-3 text-muted-foreground/25" />
+                          {elapsedSeconds > 0 ? (
+                            <span className="ml-auto font-mono text-[10px] text-muted-foreground/30 tabular-nums">
+                              {elapsedSeconds >= 60
+                                ? `${Math.floor(elapsedSeconds / 60)}m${String(elapsedSeconds % 60).padStart(2, "0")}s`
+                                : `${elapsedSeconds}s`}
+                            </span>
+                          ) : null}
+                        </div>
+                        {toolTimeline.map((item) => (
+                          <ToolPill key={item.toolUseId} item={item} />
+                        ))}
+                      </div>
+                    ) : elapsedSeconds > 0 ? (
+                      <span className="font-mono text-[10px] text-muted-foreground/30 tabular-nums">
+                        {elapsedSeconds >= 60
+                          ? `${Math.floor(elapsedSeconds / 60)}m${String(elapsedSeconds % 60).padStart(2, "0")}s`
+                          : `${elapsedSeconds}s`}
+                      </span>
+                    ) : null}
+                  </>
+                )}
+
+                {/* Timer — shown alongside blocks when tools are active */}
+                {contentBlocks && contentBlocks.length > 0 && elapsedSeconds > 0 ? (
                   <span className="font-mono text-[10px] text-muted-foreground/30 tabular-nums">
                     {elapsedSeconds >= 60
                       ? `${Math.floor(elapsedSeconds / 60)}m${String(elapsedSeconds % 60).padStart(2, "0")}s`
@@ -400,18 +444,26 @@ export function ChatMessages({
                   </Attachments>
                 ) : null}
 
-                <MessageResponse className="text-[15px] leading-7 text-current">
-                  {message.content}
-                </MessageResponse>
-
-                {/* Tool pills inline — visible below the response */}
-                {isAssistant && isLastAssistant && toolTimeline.length > 0 ? (
-                  <div className="flex flex-col gap-1 pt-0.5">
-                    {toolTimeline.map((item) => (
-                      <ToolPill key={item.toolUseId} item={item} />
-                    ))}
-                  </div>
-                ) : null}
+                {/* ── Interleaved blocks (completed) — renders when tools were used ── */}
+                {isAssistant && contentBlocks && contentBlocks.length > 0 ? (
+                  contentBlocks.map((block, i) =>
+                    block.type === "text" ? (
+                      <MessageResponse key={i} className="text-[15px] leading-7 text-current">
+                        {block.text}
+                      </MessageResponse>
+                    ) : (
+                      (() => {
+                        const item = toolTimeline.find((t) => t.toolUseId === block.toolUseId);
+                        return item ? <ToolPill key={block.toolUseId} item={item} /> : null;
+                      })()
+                    )
+                  )
+                ) : (
+                  /* ── Fallback: no blocks → flat response ── */
+                  <MessageResponse className="text-[15px] leading-7 text-current">
+                    {message.content}
+                  </MessageResponse>
+                )}
               </div>
             )}
           </MessageContent>

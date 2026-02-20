@@ -1,4 +1,10 @@
-import type { AgentSession, ChatStreamEvent, Thread, ToolTimelineItem } from "@/lib/chat-types";
+import type {
+  AgentSession,
+  ChatStreamEvent,
+  ContentBlock,
+  Thread,
+  ToolTimelineItem
+} from "@/lib/chat-types";
 import { normalizeToAcp } from "@/lib/acp-events";
 import {
   deriveThreadTitle,
@@ -63,7 +69,8 @@ export function createStreamHandler(set: Setter, get: Getter) {
         set((s) => ({
           threads: patchSession(s.threads, threadId, sessionId, {
             isThinking: true,
-            status: "running" as const
+            status: "running" as const,
+            contentBlocks: [] as ContentBlock[]
           })
         }));
         return;
@@ -271,11 +278,24 @@ export function createStreamHandler(set: Setter, get: Getter) {
               ];
             }
 
+            // Build interleaved contentBlocks: snapshot text before this tool
+            const prevBlocks = sess.contentBlocks ?? [];
+            const textCommitted = prevBlocks
+              .filter((b) => b.type === "text")
+              .reduce((acc, b) => acc + (b as { type: "text"; text: string }).text.length, 0);
+            const lastMsg = [...sess.messages].reverse().find((m) => m.role === "assistant");
+            const textSoFar = lastMsg?.content ?? "";
+            const newText = textSoFar.slice(textCommitted);
+            const newBlocks: ContentBlock[] = [...prevBlocks];
+            if (newText) newBlocks.push({ type: "text", text: newText });
+            newBlocks.push({ type: "tool", toolUseId: acp.raw.toolUseId });
+
             return {
               toolTimeline: nextItems,
               subagents: nextSubagents,
               isThinking: true,
-              status: "running" as const
+              status: "running" as const,
+              contentBlocks: newBlocks
             };
           })
         }));
@@ -315,9 +335,6 @@ export function createStreamHandler(set: Setter, get: Getter) {
                       finishedAt: acp.raw.timestamp
                     }
                   ];
-            const toolName =
-              currentItems.find((item) => item.toolUseId === acp.raw.toolUseId)?.name ?? "tool";
-
             const isSpawned =
               typeof resultSummary === "string" && resultSummary.toLowerCase().includes("spawn");
             const nextSubagents = sess.subagents.map((a) => {
@@ -385,11 +402,26 @@ export function createStreamHandler(set: Setter, get: Getter) {
                     i === streamingMsgIdx ? { ...msg, content: safeContent } : msg
                   )
                 : sess.messages;
+            // Finalize contentBlocks: append remaining text after last tool
+            const prevBlocks = sess.contentBlocks ?? [];
+            const hasToolBlocks = prevBlocks.some((b) => b.type === "tool");
+            let finalBlocks: ContentBlock[] | undefined;
+            if (hasToolBlocks) {
+              const textCommitted = prevBlocks
+                .filter((b) => b.type === "text")
+                .reduce((acc, b) => acc + (b as { type: "text"; text: string }).text.length, 0);
+              const remainingText = safeContent.slice(textCommitted);
+              finalBlocks = remainingText
+                ? [...prevBlocks, { type: "text", text: remainingText }]
+                : prevBlocks;
+            }
+
             const prevCost = sess.accumulatedCostUsd ?? 0;
             const addCost = acp.raw.sessionCostUsd ?? 0;
             return {
               messages: patchedMessages,
               status: "done" as const,
+              contentBlocks: finalBlocks,
               requestId: undefined,
               pendingApproval: null,
               pendingQuestion: null,
