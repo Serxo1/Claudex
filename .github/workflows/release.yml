@@ -37,46 +37,57 @@ jobs:
       - name: Install dependencies
         run: npm ci --legacy-peer-deps
 
-      - name: Setup macOS keychain for code signing
+      - name: Setup macOS keychain
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
         run: |
-          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
-          KEYCHAIN_PASSWORD="temp-ci-password"
+          set -eo pipefail
+
+          KEYCHAIN_PASS="ci-temp-password"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+
+          # Decode certificate
+          echo "$CSC_LINK" | base64 --decode > /tmp/certificate.p12
 
           # Create a temporary keychain
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
 
-          # Import the certificate
-          echo "$CSC_LINK" | base64 --decode > /tmp/certificate.p12
+          # Import cert — -A allows all apps to access the key without UI prompt
           security import /tmp/certificate.p12 \
             -k "$KEYCHAIN_PATH" \
             -P "$CSC_KEY_PASSWORD" \
             -T /usr/bin/codesign \
             -T /usr/bin/productbuild \
-            -T /usr/bin/security
+            -A
           rm /tmp/certificate.p12
 
           # Add to keychain search list
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
 
-          # *** Critical: grant codesign access without UI dialog ***
+          # Grant codesign access without UI dialog (critical for headless CI)
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
-            -s -k "$KEYCHAIN_PASSWORD" \
+            -s -k "$KEYCHAIN_PASS" \
             "$KEYCHAIN_PATH"
 
-          # Export keychain path for the build step
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+          # Find and export the identity name so electron-builder uses our keychain
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | grep "Developer ID Application" \
+            | head -1 \
+            | sed 's/.*"\(.*\)".*/\1/')
+
+          echo "Found identity: $IDENTITY"
+          echo "CSC_NAME=$IDENTITY" >> $GITHUB_ENV
 
       - name: Build & publish macOS
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          CSC_KEYCHAIN: ${{ env.KEYCHAIN_PATH }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          # Use identity name (not CSC_LINK) so electron-builder uses our
+          # pre-configured keychain instead of creating a new one
+          CSC_NAME: ${{ env.CSC_NAME }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
