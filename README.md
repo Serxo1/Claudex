@@ -42,7 +42,19 @@ Get the latest installer from the [Releases page](https://github.com/Serxo1/Clau
 |----------|------|
 | Windows | `Claudex-Setup-x.y.z.exe` |
 | macOS (Apple Silicon) | `Claudex-x.y.z-arm64.dmg` |
-| macOS (Intel) | `Claudex-x.y.z.dmg` |
+
+### macOS — Gatekeeper
+
+The macOS build is not notarized. macOS will block it from opening directly. To bypass:
+
+1. Download the `.dmg`, open it and drag **Claudex.app** to **Applications**
+2. Open Terminal and run:
+
+```bash
+xattr -rd com.apple.quarantine /Applications/Claudex.app
+```
+
+3. Open Claudex normally from Launchpad or Finder
 
 ---
 
