@@ -6,24 +6,47 @@ const { randomUUID } = require("node:crypto");
 
 // ---------------------------------------------------------------------------
 // Fix PATH for macOS GUI apps (Finder / Launchpad launch).
-// The system inherits a minimal PATH that omits shell-configured dirs such as
-// nvm, Homebrew, and npm global bins.  We run the user's interactive shell to
-// capture the full environment and patch process.env.PATH once at startup so
-// every subsequent child_process spawn (including the Claude Agent SDK's
-// internal "node cli.js") inherits the correct PATH.
+// GUI apps inherit a minimal PATH from launchd (/usr/bin:/bin:/usr/sbin:/sbin)
+// that omits Homebrew (/opt/homebrew/bin), nvm, and npm global bins.
+// Strategy: ask the user's shell for PATH using a unique sentinel so that
+// shell startup output (PS1 prompts, nvm messages) can't corrupt the result.
 // ---------------------------------------------------------------------------
 if (process.platform === "darwin") {
   try {
     const { spawnSync } = require("node:child_process");
     const userShell = process.env.SHELL || "/bin/zsh";
-    // -i: interactive shell — sources ~/.zshrc where nvm/npm global paths live
-    const result = spawnSync(userShell, ["-i", "-c", "env"], {
-      encoding: "utf8",
-      timeout: 8000
-    });
-    if (result.status === 0 && result.stdout) {
-      const pathLine = result.stdout.split("\n").find((l) => l.startsWith("PATH="));
-      if (pathLine) process.env.PATH = pathLine.slice(5);
+
+    // -il = interactive + login: sources ~/.zshrc AND ~/.zprofile / ~/.profile
+    // Sentinel makes extraction unambiguous even when .zshrc echoes to stdout
+    const SENTINEL = "__CLAUDEX_PATH_START__";
+    const result = spawnSync(
+      userShell,
+      ["-il", "-c", `printf "${SENTINEL}%s\\n" "$PATH"`],
+      { encoding: "utf8", timeout: 8000 }
+    );
+    const match = (result.stdout || "").match(
+      new RegExp(`${SENTINEL}(.+)`)
+    );
+    if (match && match[1].includes("/")) {
+      process.env.PATH = match[1].trim();
+    } else {
+      // Fallback: find node + claude explicitly and prepend their dirs
+      const r2 = spawnSync(userShell, ["-il", "-c", "which node; which claude"], {
+        encoding: "utf8",
+        timeout: 5000
+      });
+      const dirs = [
+        ...new Set(
+          (r2.stdout || "")
+            .split("\n")
+            .map((l) => l.trim())
+            .filter((l) => l.startsWith("/"))
+            .map((l) => require("node:path").dirname(l))
+        )
+      ];
+      if (dirs.length > 0) {
+        process.env.PATH = dirs.join(":") + ":" + (process.env.PATH || "");
+      }
     }
   } catch {
     // Keep system PATH — app still works if shell init fails
