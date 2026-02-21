@@ -1,6 +1,6 @@
 {
   "name": "claudex",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Claudex — visual desktop wrapper for Claude Code CLI",
   "author": "Claudex",
@@ -145,6 +145,7 @@
       ],
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
+      "notarize": true,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "gatekeeperAssess": false
