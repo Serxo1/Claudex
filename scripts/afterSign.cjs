@@ -57,44 +57,32 @@ module.exports = async function afterSign(context) {
   binaries.sort((a, b) => b.split(path.sep).length - a.split(path.sep).length);
 
   for (const binary of binaries) {
-    sign(binary, identity, entitlements);
+    // Entitlements only apply to executables; dylibs/frameworks ignore them.
+    // Sign dylibs with just --options runtime for cleanliness.
+    const isExecutable = isMachOExecutable(binary);
+    sign(binary, identity, isExecutable ? entitlements : null);
   }
 
-  // Final re-sign of the whole .app
+  // Final re-sign of the whole .app (without --deep; Apple recommends
+  // signing each binary individually, which we already did above).
   console.log(`[afterSign] Re-signing .app bundle: ${appPath}`);
-  sign(appPath, identity, entitlements, true);
+  sign(appPath, identity, entitlements);
 
   console.log("[afterSign] All binaries signed successfully.");
 };
 
 // ---------------------------------------------------------------------------
 
-function sign(target, identity, entitlements, deep = false) {
-  const deepFlag = deep ? "--deep " : "";
-  const cmd = [
-    "codesign",
+function sign(target, identity, entitlements) {
+  const args = [
     "--force",
     "--options", "runtime",
-    "--entitlements", `"${entitlements}"`,
-    "--sign", `"${identity}"`,
-    deep ? "--deep" : null,
-    `"${target}"`,
-  ]
-    .filter(Boolean)
-    .join(" ");
+    ...(entitlements ? ["--entitlements", entitlements] : []),
+    "--sign", identity,
+    target,
+  ];
 
-  const result = spawnSync(
-    "codesign",
-    [
-      "--force",
-      "--options", "runtime",
-      "--entitlements", entitlements,
-      "--sign", identity,
-      ...(deep ? ["--deep"] : []),
-      target,
-    ],
-    { stdio: "inherit" }
-  );
+  const result = spawnSync("codesign", args, { stdio: "inherit" });
 
   if (result.status !== 0) {
     throw new Error(`codesign failed for: ${target}`);
@@ -149,6 +137,16 @@ function isMachO(filePath) {
   } catch {
     return false;
   }
+}
+
+function isMachOExecutable(filePath) {
+  // Dylibs have .dylib extension or live inside .framework bundles.
+  // .node files are shared libraries (native addons).
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".dylib" || ext === ".node" || ext === ".so") return false;
+  // Files inside a .framework directory are framework libraries
+  if (filePath.includes(".framework/")) return false;
+  return true;
 }
 
 function findIdentity() {
