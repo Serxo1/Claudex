@@ -78,7 +78,8 @@ function register(ipcMain, { settings }) {
       // Use the user's login shell so that PATH includes npm/nvm global bins
       // (GUI apps launched from Finder inherit a minimal PATH that may miss them)
       const userShell = process.env.SHELL || "/bin/zsh";
-      const child = spawn(userShell, ["-l", "-c", "claude --version"], {
+      // -i = interactive shell, sources ~/.zshrc where nvm/npm global paths live
+      const child = spawn(userShell, ["-i", "-c", "claude --version"], {
         stdio: ["ignore", "pipe", "pipe"]
       });
 

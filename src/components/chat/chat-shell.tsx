@@ -163,7 +163,10 @@ export function ChatShell() {
           refreshWorkspaceFileTree(),
           onTestCli()
         ]);
-        setStatus("Ready.");
+        // Only mark Ready when CLI is available; otherwise keep the error message
+        if (useSettingsStore.getState().claudeCodeReady !== false) {
+          setStatus("Ready.");
+        }
       } catch (error) {
         setStatus((error as Error).message);
       }
