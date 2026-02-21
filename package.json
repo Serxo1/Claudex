@@ -126,7 +126,8 @@
       {
         "provider": "github",
         "owner": "Serxo1",
-        "repo": "Claudex"
+        "repo": "Claudex",
+        "releaseType": "release"
       }
     ],
     "win": {
