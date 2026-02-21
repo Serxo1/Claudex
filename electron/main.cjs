@@ -4,6 +4,32 @@ const fs = require("node:fs");
 const os = require("node:os");
 const { randomUUID } = require("node:crypto");
 
+// ---------------------------------------------------------------------------
+// Fix PATH for macOS GUI apps (Finder / Launchpad launch).
+// The system inherits a minimal PATH that omits shell-configured dirs such as
+// nvm, Homebrew, and npm global bins.  We run the user's interactive shell to
+// capture the full environment and patch process.env.PATH once at startup so
+// every subsequent child_process spawn (including the Claude Agent SDK's
+// internal "node cli.js") inherits the correct PATH.
+// ---------------------------------------------------------------------------
+if (process.platform === "darwin") {
+  try {
+    const { spawnSync } = require("node:child_process");
+    const userShell = process.env.SHELL || "/bin/zsh";
+    // -i: interactive shell — sources ~/.zshrc where nvm/npm global paths live
+    const result = spawnSync(userShell, ["-i", "-c", "env"], {
+      encoding: "utf8",
+      timeout: 8000
+    });
+    if (result.status === 0 && result.stdout) {
+      const pathLine = result.stdout.split("\n").find((l) => l.startsWith("PATH="));
+      if (pathLine) process.env.PATH = pathLine.slice(5);
+    }
+  } catch {
+    // Keep system PATH — app still works if shell init fails
+  }
+}
+
 // Suppress "Operation aborted" rejections from the Claude Agent SDK when a
 // stream is aborted while a tool-approval promise is still pending.
 process.on("unhandledRejection", (reason) => {
