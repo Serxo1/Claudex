@@ -32,6 +32,7 @@ export interface UseTerminalTabsReturn {
   addTab: () => void;
   closeTab: (id: string) => void;
   getContainerCallback: (tabId: string) => (el: HTMLDivElement | null) => void;
+  focusActiveTab: () => void;
   latestTerminalError: string;
   terminalShellLabel: string;
   onOpenExternalTerminal: () => Promise<void>;
@@ -319,6 +320,11 @@ export function useTerminalTabs(
     });
   }, []);
 
+  const focusActiveTab = useCallback(() => {
+    const state = xtermMapRef.current.get(activeTabIdRef.current);
+    if (state) state.xterm.focus();
+  }, []);
+
   const onOpenExternalTerminal = useCallback(async () => {
     try {
       await window.desktop.terminal.openExternal();
@@ -351,6 +357,7 @@ export function useTerminalTabs(
     addTab,
     closeTab,
     getContainerCallback,
+    focusActiveTab,
     latestTerminalError,
     terminalShellLabel,
     onOpenExternalTerminal,

@@ -601,7 +601,10 @@ export function ChatShell() {
         )}
 
         {terminalHook.terminalOpen ? (
-          <div className="border-t border-border/70 bg-background px-3 py-3 lg:px-6">
+          <div
+            className="border-t border-border/70 bg-background px-3 py-3 lg:px-6"
+            onMouseDown={() => terminalHook.focusActiveTab()}
+          >
             <div className={cn("mx-auto w-full", chatContainerMax)}>
               <div className="rounded-lg border border-border/60 bg-background">
                 {/* Tab bar */}
