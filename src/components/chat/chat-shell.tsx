@@ -50,6 +50,7 @@ export function ChatShell() {
   }, [splitPct]);
 
   const setStatus = useSettingsStore((s) => s.setStatus);
+  const status = useSettingsStore((s) => s.status);
   const settings = useSettingsStore((s) => s.settings);
   const refreshSettings = useSettingsStore((s) => s.refreshSettings);
   const onTestCli = useSettingsStore((s) => s.onTestCli);
@@ -338,7 +339,13 @@ export function ChatShell() {
       <NewModelAnnouncement />
 
       {/* Setup / onboarding overlay — shown when CLI is not detected */}
-      {claudeCodeReady === false && <SetupScreen isVerifying={isBusy} onVerify={onTestCli} />}
+      {claudeCodeReady === false && (
+        <SetupScreen
+          isVerifying={isBusy}
+          onVerify={onTestCli}
+          resultMessage={!isBusy ? status : undefined}
+        />
+      )}
 
       {/* Update banner */}
       {updateInfo && (

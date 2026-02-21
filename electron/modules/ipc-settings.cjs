@@ -75,7 +75,10 @@ function register(ipcMain, { settings }) {
   ipcMain.handle("providers:testClaudeCli", async () => {
     const { spawn } = require("node:child_process");
     return new Promise((resolve) => {
-      const child = spawn("claude", ["--version"], {
+      // Use the user's login shell so that PATH includes npm/nvm global bins
+      // (GUI apps launched from Finder inherit a minimal PATH that may miss them)
+      const userShell = process.env.SHELL || "/bin/zsh";
+      const child = spawn(userShell, ["-l", "-c", "claude --version"], {
         stdio: ["ignore", "pipe", "pipe"]
       });
 

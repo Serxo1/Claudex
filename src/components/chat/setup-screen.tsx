@@ -1,11 +1,19 @@
 import { useState } from "react";
-import { CheckCircle2, ClipboardCopy, ExternalLink, Loader2, Terminal } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  ClipboardCopy,
+  ExternalLink,
+  Loader2,
+  Terminal
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import logo from "@/assets/logo.png";
 
 type Props = {
   onVerify: () => Promise<void>;
   isVerifying: boolean;
+  resultMessage?: string;
 };
 
 function CopyableCommand({ command }: { command: string }) {
@@ -66,7 +74,7 @@ function Step({ number, title, description, command, done }: StepProps) {
   );
 }
 
-export function SetupScreen({ onVerify, isVerifying }: Props) {
+export function SetupScreen({ onVerify, isVerifying, resultMessage }: Props) {
   function openExternal(url: string) {
     void window.desktop.terminal.openExternal().catch(() => {
       // fallback — open via anchor
@@ -149,6 +157,13 @@ export function SetupScreen({ onVerify, isVerifying }: Props) {
             <Terminal className="mr-2 size-4" />
             Abrir terminal externo
           </Button>
+
+          {resultMessage && (
+            <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <AlertCircle className="mt-0.5 size-4 shrink-0" />
+              <span>{resultMessage}</span>
+            </div>
+          )}
 
           <p className="text-center text-xs text-muted-foreground">
             Documentação:{" "}
