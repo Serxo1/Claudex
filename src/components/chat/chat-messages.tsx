@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { motion } from "motion/react";
 import {
   ChevronDown,
   CircleAlert,
@@ -352,6 +353,10 @@ export function ChatMessages({
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const initialMessageCount = useRef(
+    session.messages.filter((m) => !(m as { hidden?: boolean }).hidden).length
+  );
+
   const messages = session.messages;
   const toolTimeline = session.toolTimeline ?? EMPTY_ARRAY;
   const contentBlocks = session.contentBlocks;
@@ -498,8 +503,15 @@ export function ChatMessages({
     // User messages mark the start of a new exchange → more breathing room
     const topPadding = index === 0 ? "pt-6" : message.role === "user" ? "pt-10" : "pt-3";
 
+    const isNewMessage = index >= initialMessageCount.current;
+
     return (
-      <div className={cn("mx-auto w-full px-4 lg:px-8", chatContainerMax, topPadding)}>
+      <motion.div
+        className={cn("mx-auto w-full px-4 lg:px-8", chatContainerMax, topPadding)}
+        initial={isNewMessage ? { opacity: 0, y: 6 } : false}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.18, ease: "easeOut" }}
+      >
         <Message className={isAssistant ? "w-full max-w-full" : undefined} from={message.role}>
           <MessageContent
             className={
@@ -739,7 +751,7 @@ export function ChatMessages({
             </div>
           ) : null}
         </Message>
-      </div>
+      </motion.div>
     );
   };
 
