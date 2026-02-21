@@ -82,7 +82,7 @@ export function useTerminalTabs(
   // Initialize a new XTerm for a tab and create its PTY session
   // -------------------------------------------------------------------------
 
-  function initXterm(tabId: string, container: HTMLDivElement, visible: boolean) {
+  function initXterm(tabId: string, container: HTMLDivElement) {
     if (xtermMapRef.current.has(tabId)) return;
 
     const term = new XTerm({
@@ -100,7 +100,8 @@ export function useTerminalTabs(
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(container);
-    if (visible) {
+    // Check actual DOM visibility — avoids using stale activeTabIdRef
+    if (container.offsetHeight > 0) {
       fitAddon.fit();
       term.focus();
     }
@@ -157,11 +158,18 @@ export function useTerminalTabs(
     };
     window.addEventListener("resize", handleResize);
 
+    // Re-focus XTerm when clicking anywhere on the container (e.g. padding area)
+    const handleMouseDown = () => term.focus();
+    container.addEventListener("mousedown", handleMouseDown);
+
     const state: TabXtermState = {
       xterm: term,
       fitAddon,
       sessionId: null,
-      cleanupResize: () => window.removeEventListener("resize", handleResize),
+      cleanupResize: () => {
+        window.removeEventListener("resize", handleResize);
+        container.removeEventListener("mousedown", handleMouseDown);
+      },
       disposeInput,
       unsubscribeData,
       unsubscribeExit,
@@ -182,6 +190,9 @@ export function useTerminalTabs(
         s.sessionId = session.sessionId;
         if (activeTabIdRef.current === tabId) {
           setTerminalShellLabel(session.shell || "");
+        }
+        // Always sync PTY dimensions after session creation (don't rely on stale activeTabIdRef)
+        if (container.offsetHeight > 0) {
           handleResize();
         }
       } catch (error) {
@@ -272,9 +283,7 @@ export function useTerminalTabs(
         containerMapRef.current.set(tabId, el);
         // Initialize XTerm lazily — only if not already done
         if (!xtermMapRef.current.has(tabId)) {
-          // This tab is visible only if it's the active tab
-          const isVisible = activeTabIdRef.current === tabId;
-          initXterm(tabId, el, isVisible);
+          initXterm(tabId, el);
         }
       } else {
         containerMapRef.current.delete(tabId);

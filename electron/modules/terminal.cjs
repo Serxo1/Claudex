@@ -44,7 +44,14 @@ function resolveTerminalShell() {
 function resolveTerminalCwd(appGetHomePath) {
   const WORKSPACE_DIR = getWorkspaceDir();
   try {
-    if (fs.existsSync(WORKSPACE_DIR) && fs.statSync(WORKSPACE_DIR).isDirectory()) {
+    // Exclude "/" — it's the default process.cwd() for GUI apps launched from
+    // Finder/Launchpad and is not a meaningful workspace directory.
+    if (
+      WORKSPACE_DIR &&
+      WORKSPACE_DIR !== "/" &&
+      fs.existsSync(WORKSPACE_DIR) &&
+      fs.statSync(WORKSPACE_DIR).isDirectory()
+    ) {
       return WORKSPACE_DIR;
     }
   } catch (error) {
