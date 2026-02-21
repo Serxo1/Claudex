@@ -76,7 +76,6 @@ module.exports = async function afterSign(context) {
 function sign(target, identity, entitlements) {
   const args = [
     "--force",
-    "--options", "runtime",
     ...(entitlements ? ["--entitlements", entitlements] : []),
     "--sign", identity,
     target,

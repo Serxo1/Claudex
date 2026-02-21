@@ -107,6 +107,7 @@
     "appId": "io.claudex.app",
     "productName": "Claudex",
     "icon": "public/logo.png",
+    "afterSign": "scripts/afterSign.cjs",
 
     "directories": {
       "output": "dist_electron"
@@ -142,6 +143,9 @@
         }
       ],
       "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
       "gatekeeperAssess": false
     },
     "dmg": {
